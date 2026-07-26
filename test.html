@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Populus — engine tests</title>
+<style>
+:root{--bg:#15110e;--panel:#1c1714;--line:rgba(255,255,255,.10);--ink:#f4eee6;--ink2:#cdc2b5;
+ --muted:#93877a;--faint:#6b6055;--gold:#d9a441;--teal:#4fb3a5;--red:#cd6a4c;
+ --serif:'Iowan Old Style','Palatino Linotype',Palatino,Georgia,serif;
+ --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--mono);font-size:13px;line-height:1.6}
+.wrap{max-width:820px;margin:0 auto;padding:44px 32px 90px}
+h1{font-family:var(--serif);font-size:30px;font-weight:500;margin:0 0 6px}
+.sub{color:var(--muted);font-size:13px;margin-bottom:28px;font-family:var(--serif)}
+.banner{border-radius:12px;padding:20px 24px;margin-bottom:28px;border:1px solid}
+.banner.pass{border-color:rgba(79,179,165,.4);background:rgba(79,179,165,.08)}
+.banner.fail{border-color:rgba(205,106,76,.5);background:rgba(205,106,76,.10)}
+.banner .n{font-family:var(--serif);font-size:34px;line-height:1}
+.banner .lbl{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin-top:7px}
+.cols{display:flex;gap:44px;align-items:flex-start}
+.grp{font-family:var(--serif);font-size:17px;color:var(--gold);margin:26px 0 8px;
+  border-bottom:1px solid var(--line);padding-bottom:6px}
+.row{display:flex;gap:10px;padding:2.5px 0;align-items:baseline}
+.row .m{flex:0 0 auto;width:16px}
+.pass .m{color:var(--teal)}
+.fail{color:var(--red)}
+.fail .m{color:var(--red)}
+.row .t{color:var(--ink2)}
+.fail .t{color:var(--red)}
+.note{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);color:var(--faint);
+  font-family:var(--serif);font-size:13px;line-height:1.7}
+code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Engine tests</h1>
+  <div class="sub">The calibration ledger scores the model's predictions. This scores the code that produces them.</div>
+  <div id="out">Running…</div>
+  <div class="note">
+    Also runs headless: <code>node engine.test.js</code> — exits non-zero on failure.<br>
+    These assert invariants rather than today's numbers, so retuning the model does not break them,
+    but breaking the model does.
+  </div>
+</div>
+<script src="engine.js"></script>
+<script src="engine.test.js"></script>
+<script>
+(function(){
+  var res;
+  try { res = EngineTests.run(); }
+  catch (err) {
+    document.getElementById('out').innerHTML =
+      '<div class="banner fail"><div class="n">error</div>' +
+      '<div class="lbl">the suite itself threw</div>' +
+      '<div style="margin-top:12px;color:var(--red)">' + String(err && err.stack || err) + '</div></div>';
+    return;
+  }
+  var html = '<div class="banner ' + (res.failed ? 'fail' : 'pass') + '"><div class="cols">' +
+    '<div><div class="n" style="color:var(--teal)">' + res.passed + '</div><div class="lbl">passed</div></div>' +
+    '<div><div class="n" style="color:' + (res.failed ? 'var(--red)' : 'var(--faint)') + '">' + res.failed + '</div>' +
+    '<div class="lbl">failed</div></div></div></div>';
+  res.log.forEach(function(l){
+    if (l.type === 'group') html += '<div class="grp">' + l.text + '</div>';
+    else html += '<div class="row ' + l.type + '"><span class="m">' +
+      (l.type === 'pass' ? '✓' : '✕') + '</span><span class="t">' + l.text + '</span></div>';
+  });
+  document.getElementById('out').innerHTML = html;
+  document.title = (res.failed ? '✕ ' + res.failed + ' failing' : '✓ ' + res.passed + ' passing') + ' — Populus';
+})();
+</script>
+</body>
+</html>

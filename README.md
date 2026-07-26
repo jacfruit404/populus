@@ -154,6 +154,34 @@ and its numbers deserve no particular trust.
 
 ---
 
+## Tests
+
+The ledger scores the model's predictions. The tests score the code that
+produces them — an engine with an off-by-one would let the ledger faithfully
+record well-calibrated garbage.
+
+```bash
+node engine.test.js               # headless, exits non-zero on failure
+```
+
+No Node? The same suite runs in the browser at
+**http://localhost:8765/test.html** — same file, no framework, no dependencies.
+
+108 assertions covering the invariants that matter:
+
+- the headline rate equals the share-weighted segment rates, exactly
+- raising a price never raises demand, at population and segment level
+- adding a custom dimension does not perturb the existing ones
+- inverted traits resist; neutral segments contribute nothing
+- intervals narrow with sample size but never collapse
+- the same seed reproduces a prediction; a new seed draws a new sample
+- agents inherit their segment's age band, income, country and urban share
+- every repair, rejection and warning in the validator
+- `parseOutcome('')` is rejected rather than silently recorded as 0%
+
+They assert *invariants*, not today's numbers, so retuning coefficients does not
+break them — but breaking the model does.
+
 ## Adding a market by hand
 
 Everything about the built-in populations lives in the `MARKETS` object near the
@@ -172,8 +200,11 @@ top of the script block in `index.html`. Each segment carries:
 }
 ```
 
-That is the only place you need to touch. The engine — `latent()`, `segZ()`,
-`buildAgents()`, `simulate()` — sits below it.
+That is the only place you need to touch. The simulation itself —  `latent()`,
+`segZ()`, `buildAgents()`, `simulate()`, `validateMarket()` — lives in
+`engine.js`, which is pure logic with no DOM, no globals and no network. That
+separation is what makes it testable, and it is the same boundary the local
+model respects: the model writes populations, the engine decides what they do.
 
 ---
 
@@ -222,10 +253,15 @@ is genuinely uncertain — not as a substitute for asking real people.
 ## Layout
 
 ```
-index.html    the whole app — markup, styles, simulation engine
-serve.py      static server plus the ledger read/write API
-serve.sh      checks Ollama, then starts serve.py
-ledger.json   your committed predictions (created on first commit, gitignored)
+index.html      the interface — markup, styles, rendering
+engine.js       the simulation: pure logic, no DOM, no network
+engine.test.js  108 assertions against engine.js
+test.html       browser runner for the same suite
+serve.py        static server plus the ledger read/write API
+serve.sh        checks Ollama, then starts serve.py
+ledger.json     your committed predictions (created on first commit, gitignored)
 ```
 
-No build step, no dependencies, no bundler.
+No build step, no dependencies, no bundler. `index.html` loads `engine.js` with a
+plain `<script>` tag; `engine.js` also loads under Node with `require`, which is
+how the same test file runs in both places.

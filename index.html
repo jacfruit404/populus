@@ -241,14 +241,15 @@ table.mx td:first-child{font-size:12.5px}
   <main class="main" id="main"></main>
 </div>
 <div id="modal"></div>
+<script src="engine.js"></script>
 <script>
 /* ============================== UTIL ============================== */
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function h32(str){let h=2166136261>>>0;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return h>>>0}
-function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
-const logistic = z => 1/(1+Math.exp(-z));
-const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+/* Every piece of simulation logic lives in engine.js — pure, no DOM, and
+   covered by tests. This file only draws things. */
+const {h32, rng, logistic, clamp, TRAIT_KEYS, parseAgeRange,
+       extractJSON, validateMarket, completenessGaps, AGENTS_SHOWN} = Engine;
 const pct = v => (v*100).toFixed(1);
 const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4','#7fa66a','#c98fb0','#b0894f','#5e9fb8','#c4a86d'];
 
@@ -361,61 +362,10 @@ const PRESETS = [
  {t:'policy',m:'uk',q:'How will the electorate respond to a proposed transit fare freeze?',o:['Two-year fare freeze funded by fuel duty','Fare freeze funded by borrowing','Discount for under-25s only']}
 ];
 
-/* Six core behavioural dimensions, always present. `invert` means a high trait
-   value pushes AGAINST the option: high scepticism resists a claim, high
-   switching friction resists change. */
-const CORE_DIMS = [
- {key:'price',  label:'Price framing',       invert:false},
- {key:'novelty',label:'Novelty appetite',    invert:false},
- {key:'trust',  label:'Institutional trust', invert:false},
- {key:'skeptic',label:'Claim credibility',   invert:true },
- {key:'effort', label:'Switching effort',    invert:true },
- {key:'social', label:'Social proof',        invert:false}
-];
-const TRAIT_KEYS = CORE_DIMS.map(d=>d.key);
-
-/* A population may declare extra domain dimensions — health consciousness,
-   trust in imported goods, whatever the decision actually turns on. They enter
-   the affinity calculation exactly like the core six and show up as drivers. */
-function dimsFor(mk){
-  const m = MARKETS[mk||S.market];
-  return CORE_DIMS.concat((m.traits||[]).map(t=>({key:t.key,label:t.label,invert:!!t.invert,custom:true})));
-}
-// core driver labels read differently depending on what is being decided
-const DIMLBL = {
- pricing:{price:'Price vs. reference point',effort:'Switching friction',trust:'Brand trust'},
- product:{price:'Perceived value for money',novelty:'Appetite for a new workflow',effort:'Adoption effort',trust:'Vendor trust'},
- message:{price:'Value framing in the claim',skeptic:'Claim credibility',trust:'Authority of the source',social:'Peer validation'},
- policy:{price:'Household cost impact',novelty:'Appetite for change',trust:'Trust it gets delivered',effort:'Disruption to routine',social:'Perceived fairness'}
-};
-const dimLabel = (k,fallback) => (DIMLBL[S.type]||{})[k] || fallback;
-/* The decision and the population are chosen in separate steps, so nothing stops
-   you running a snack audience against a decision about medical software. The
-   traits and willingness-to-pay figures would be meaningless, and the verbatims
-   read as nonsense. Cheap content-word overlap catches the obvious cases. */
-const STOPW = new Set(('the and for our your what which should would could when where '+
- 'that this with from they them their have has been will can not are was were '+
- 'much many more most less into onto over under about than then also just very '+
- 'new first next best good great make made take does did you it is be to of in on at a an or if we my'
- ).split(/\s+/));
-const contentWords = s => (String(s||'').toLowerCase().match(/[a-z]{4,}/g)||[]).filter(w=>!STOPW.has(w));
-function coherenceWarning(){
-  const m = MARKETS[S.market];
-  if(!m || !m.brief) return null;                 // only for model-generated populations
-  const pop = new Set(contentWords(m.name+' '+m.brief+' '+m.frame));
-  const dec = contentWords(S.q+' '+S.opts.join(' '));
-  if(!dec.length || !pop.size) return null;
-  if(dec.some(w=>pop.has(w))) return null;
-  return `This population was built for “${m.brief.slice(0,110)}${m.brief.length>110?'…':''}” — nothing in it relates to the decision you are testing. `+
-         `Its traits, willingness-to-pay figures and verbatims were written for a different question, so any result will be meaningless.`;
-}
-function parseAgeRange(s){
-  const m = String(s||'').match(/(\d{2})\s*(?:-|–|—|to)\s*(\d{2})/);
-  if(m) return [+m[1], +m[2]];
-  const one = String(s||'').match(/(\d{2})/);
-  if(one) return [+one[1], +one[1]+12];
-  return [24,62];
-}
+/* Simulation logic is in engine.js. These adapters bind it to app state so
+   every call site below stays unchanged. */
+const dimsFor = mk => Engine.dims(MARKETS[mk || S.market]);
+const coherenceWarning = () => Engine.coherenceWarning(MARKETS[S.market], S.q, S.opts);
 
 /* ============================== CALIBRATION LEDGER ==============================
    Predictions are committed here and held open until reality closes them.
@@ -466,12 +416,9 @@ function ledgerCommit(){
 function ledgerClose(id){
   const rec = LED.find(r=>r.id===id);
   if(!rec || rec.outcome) return;                  // a closed prediction stays closed
-  // Number('') is 0, which would silently record a 0% outcome for an empty field
-  const entered = S.ledgerDraft ? S.ledgerDraft.observed : undefined;
-  if(entered===undefined || entered===null || String(entered).trim()==='') return;
-  const raw = Number(entered);
-  if(!isFinite(raw)||raw<0||raw>100) return;
-  rec.outcome = {observed: raw/100, note: (S.ledgerDraft.note||'').slice(0,160), closedAt: new Date().toISOString()};
+  const observed = Engine.parseOutcome(S.ledgerDraft ? S.ledgerDraft.observed : undefined);
+  if(observed===null) return;
+  rec.outcome = {observed, note: (S.ledgerDraft.note||'').slice(0,160), closedAt: new Date().toISOString()};
   S.ledgerEditing=null; S.ledgerDraft={};
   ledgerSave().then(()=>render());
 }
@@ -479,23 +426,9 @@ function ledgerDelete(id){
   LED = LED.filter(r=>r.id!==id);
   ledgerSave().then(()=>render());
 }
-/* Mean absolute error says how wrong we are. Coverage says whether the stated
-   intervals mean anything: if they are honest, ~95% of outcomes land inside. */
-function ledgerStats(){
-  const closed = LED.filter(r=>r.outcome);
-  if(!closed.length) return null;
-  const signed = closed.map(r=>r.outcome.observed - r.predicted);
-  const inside = closed.filter(r=>Math.abs(r.outcome.observed-r.predicted) <= r.ci).length;
-  return {
-    n: closed.length,
-    mae: signed.reduce((a,b)=>a+Math.abs(b),0)/closed.length,
-    bias: signed.reduce((a,b)=>a+b,0)/closed.length,
-    coverage: inside/closed.length, inside
-  };
-}
+const ledgerStats = () => Engine.ledgerStats(LED);
 
 /* ============================== STATE ============================== */
-const AGENTS_SHOWN = 260;
 let S = {
   step:1, type:'pricing', market:'grocery',
   q:PRESETS[0].q, opts:PRESETS[0].o.slice(),
@@ -508,153 +441,15 @@ let S = {
 // segment toggles must track the market's actual segment count, not a fixed 5
 const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
 
-/* ============================== ENGINE ============================== */
-// Each dimension is seeded independently, so adding a custom dimension to a
-// population does not perturb the values of the existing ones.
-function latent(text, dims){
-  const o = {};
-  dims.forEach(d => o[d.key] = rng(h32(text+'#'+d.key))()*2-1);
-  return o;
-}
-function parsePrice(str){
-  const m = String(str).replace(/,/g,'').match(/-?\d+(\.\d+)?/);
-  return m ? parseFloat(m[0]) : null;
-}
-function activeSegs(){
-  const M = MARKETS[S.market];
-  const list = M.segs.map((sg,i)=>({...sg,i})).filter(sg=>S.segsOn[sg.i]);
-  const tot = list.reduce((a,b)=>a+b.s,0) || 1;
-  return list.map(sg=>({...sg,w:sg.s/tot}));
-}
-function contribs(l,t,dims){
-  const c = {};
-  dims.forEach(d=>{
-    const v = t[d.key]===undefined ? 0.5 : t[d.key];
-    c[d.key] = l[d.key] * ((d.invert ? (0.5-v) : (v-0.5))*2);
-  });
-  return c;
-}
-function segZ(seg,opt){
-  const dims = dimsFor();
-  const l = latent(S.q+'|'+opt+'|'+S.type, dims);
-  const c = contribs(l,seg.t,dims);
-  const A = dims.reduce((a,d)=>a+c[d.key],0)/dims.length;
-  let z, wtpTerm = 0;
-  if(S.type==='pricing'){
-    const p = parsePrice(opt);
-    wtpTerm = p===null ? 0 : (seg.wtp - p)/(0.62*seg.sd);
-    z = 0.15 + 0.92*clamp(wtpTerm,-4,4) + 0.90*A;
-  } else {
-    z = 0.10 + 2.30*A;
-  }
-  return {z, c, wtpTerm, A};
-}
-function buildAgents(){
-  const M = MARKETS[S.market], segs = activeSegs(), out = [];
-  let id = 0;
-  segs.forEach(sg=>{
-    const count = Math.max(4, Math.round(sg.w*AGENTS_SHOWN));
-    const [ageLo, ageHi] = parseAgeRange(sg.age);
-    const urbanShare = sg.urban===undefined ? 0.62 : sg.urban;
-    for(let k=0;k<count;k++){
-      // seed controls WHICH agents get drawn, not how the population behaves.
-      // Same seed -> same sample. New seed -> a fresh draw from the same population.
-      const r = rng(h32(S.market+'|'+sg.n+'|'+k+'|s'+S.seed));
-      const n = ((r()+r()+r())/3 - .5)*2.6;           // ~N(0,1)-ish, bounded
-      const fn = M.names.f[Math.floor(r()*M.names.f.length)];
-      const ln = M.names.l[Math.floor(r()*M.names.l.length)];
-      out.push({
-        id:id++, seg:sg.i, segRef:sg, n, u:r(),
-        name:fn+' '+ln,
-        age: ageLo + Math.floor(r()*(Math.max(ageHi,ageLo)-ageLo+1)),
-        urban: r() < urbanShare,
-        geo: sg.geo||'', income: sg.income||'',
-        ctx:M.ctx[Math.floor(r()*M.ctx.length)],
-        qi:Math.floor(r()*2)
-      });
-    }
-  });
-  return out;
-}
-function simulate(){
-  const segs = activeSegs();
-  const agents = buildAgents();
-  const opts = S.opts.filter(o=>o.trim());
-  const zmap = {}; segs.forEach(sg=> zmap[sg.i] = opts.map(o=>segZ(sg,o)));
-
-  // agent-level responses
-  const het = S.type==='pricing' ? 1.60 : 1.25;   // within-segment heterogeneity
-  agents.forEach(a=>{
-    a.p = opts.map((o,oi)=>{
-      const z = zmap[a.seg][oi].z + het*a.n;
-      return logistic(z);
-    });
-    // structural floor and ceiling: some agents are outside the category entirely,
-    // a few will act regardless of the option. Nothing ever reaches 0% or 100%.
-    a.out = a.u < 0.038;          // never in market
-    a.always = a.u > 0.972;       // acts regardless
-    a.yes = a.p.map(p=> a.out ? false : a.always ? true : p>=0.5);
-  });
-
-  // segment + population rates aggregated from agents
-  const segRates = segs.map(sg=>{
-    const mine = agents.filter(a=>a.seg===sg.i);
-    return opts.map((o,oi)=> mine.filter(a=>a.yes[oi]).length/mine.length);
-  });
-  const popRate = opts.map((o,oi)=> segs.reduce((acc,sg,si)=> acc + sg.w*segRates[si][oi], 0));
-
-  // confidence interval: sampling error + irreducible model error
-  const ci = popRate.map(p=>{
-    const se = Math.sqrt(Math.max(p*(1-p),.02)/S.popN);
-    return clamp(1.96*se + 0.016, .005, .18);
-  });
-
-  // secondary metric
-  let second = null;
-  if(S.type==='pricing'){
-    const rev = opts.map((o,oi)=>{ const p=parsePrice(o)||0; return popRate[oi]*p; });
-    const mx = Math.max(...rev)||1;
-    second = {label:'Revenue index', vals:rev.map(v=>Math.round(v/mx*100)), suffix:'', best:rev.indexOf(Math.max(...rev))};
-  }
-
-  // pick winner: revenue for pricing, rate otherwise
-  const rank = opts.map((o,i)=>i).sort((a,b)=>
-    S.type==='pricing' ? second.vals[b]-second.vals[a] : popRate[b]-popRate[a]);
-  const win = rank[0], run = rank[1]!==undefined?rank[1]:rank[0];
-
-  // Is the lead real, or inside the noise? For pricing the decision metric is revenue,
-  // so the tie test has to run on revenue, not on the raw buy rate.
-  const tie = opts.length<2 ? false : (S.type==='pricing'
-    ? Math.abs(second.vals[win]-second.vals[run]) <= 4
-    : (popRate[win]-popRate[run]) <= (ci[win]+ci[run])*0.55);
-
-  // drivers: winner vs runner-up, population-weighted
-  const drivers = dimsFor().map(dim=>{
-    const d = segs.reduce((acc,sg)=> acc + sg.w*(zmap[sg.i][win].c[dim.key]-zmap[sg.i][run].c[dim.key]), 0);
-    // custom dimensions keep the population's own label; core ones adapt to decision type
-    return {label: dim.custom ? dim.label : dimLabel(dim.key, dim.label), v:d*0.38, custom:!!dim.custom};
-  });
-  if(S.type==='pricing'){
-    const d = segs.reduce((acc,sg)=> acc + sg.w*(clamp(zmap[sg.i][win].wtpTerm,-4,4)-clamp(zmap[sg.i][run].wtpTerm,-4,4)), 0);
-    drivers.push({label:'Willingness-to-pay headroom', v:d*0.42});
-  }
-  drivers.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
-
-  // divergence: which segment disagrees most with the population
-  let spread = 0, splitSeg = segs[0];
-  segs.forEach((sg,si)=>{
-    const d = Math.abs(segRates[si][win]-popRate[win]);
-    if(d>spread){spread=d;splitSeg=sg;}
-  });
-
-  return {opts, segs, segRates, popRate, ci, second, win, run, rank, drivers, agents, spread, splitSeg, tie,
-          n:S.popN, seed:S.seed, ts:new Date()};
-}
-function quoteFor(a, oi){
-  const R = S.result, opt = R.opts[oi];
-  const bank = a.yes[oi] ? a.segRef.pos : a.segRef.neg;
-  return bank[a.qi % bank.length].replace(/\{O\}/g, opt);
-}
+/* ============================== ENGINE (bindings) ============================== */
+const simCfg = () => ({
+  markets: MARKETS, marketKey: S.market, question: S.q, type: S.type,
+  opts: S.opts.filter(o => o.trim()), segsOn: S.segsOn, popN: S.popN, seed: S.seed
+});
+const simulate    = () => Engine.simulate(simCfg());
+const buildAgents = () => Engine.buildAgents(simCfg());
+const activeSegs  = () => Engine.activeSegs(MARKETS[S.market], S.segsOn);
+const quoteFor    = (a, oi) => Engine.quoteFor(a, oi, S.result.opts);
 
 /* ============================== LOCAL MODEL ==============================
    Talks to an OpenAI-compatible or Ollama-native local server. Nothing leaves
@@ -769,146 +564,9 @@ async function llmChat(system, user){
   const j = await r.json();
   return (j.message && j.message.content) || '';
 }
-function extractJSON(txt){
-  let t = String(txt).trim().replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
-  const a = t.indexOf('{'), b = t.lastIndexOf('}');
-  if(a<0||b<0) throw new Error('no JSON object in response');
-  return JSON.parse(t.slice(a,b+1));
-}
-
-/* Validate and repair. Small models drift on schemas, so anything safely
-   fixable is fixed and reported rather than thrown away. */
-function validateMarket(o){
-  const errs=[], fix=[];
-  if(!o || typeof o!=='object') { errs.push('response was not an object'); return {ok:false,errs,fix}; }
-  const m = {
-    name: String(o.name||'Custom population').slice(0,80),
-    universe: String(o.universe||'size not specified').slice(0,60),
-    frame: String(o.frame||'Generated by a local model; not grounded in collected evidence.').slice(0,200),
-    unit: String(o.unit||'$').slice(0,12),
-    cur: String(o.cur||'$').slice(0,3),
-    ctx: Array.isArray(o.ctx)? o.ctx.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.slice(0,48)) : [],
-    names: {f:[], l:[]}, traits: [], segs: []
-  };
-
-  // extra domain dimensions declared by the population
-  const seen = {};
-  (Array.isArray(o.traits)?o.traits:[]).forEach(t=>{
-    if(!t) return;
-    let key = String(t.key||t.label||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
-    if(!key || TRAIT_KEYS.includes(key) || seen[key]) {
-      if(TRAIT_KEYS.includes(key)) fix.push(`custom trait "${key}" collides with a core trait, dropped`);
-      return;
-    }
-    seen[key]=1;
-    m.traits.push({key, label:String(t.label||key).slice(0,44), invert:!!t.invert});
-  });
-  if(m.traits.length>6){ m.traits=m.traits.slice(0,6); fix.push('trimmed to 6 custom dimensions'); }
-  const allKeys = TRAIT_KEYS.concat(m.traits.map(t=>t.key));
-  const nf = o.names&&Array.isArray(o.names.f)?o.names.f.filter(x=>typeof x==='string'&&x.trim()):[];
-  const nl = o.names&&Array.isArray(o.names.l)?o.names.l.filter(x=>typeof x==='string'&&x.trim()):[];
-  m.names.f = nf.length>=4 ? nf : (fix.push('first names padded'), nf.concat(['Alex','Sam','Jordan','Riley','Casey','Morgan','Taylor','Jamie']));
-  m.names.l = nl.length>=4 ? nl : (fix.push('surnames padded'), nl.concat(['Hayes','Okonkwo','Novak','Silva','Bennett','Iqbal']));
-  if(!m.ctx.length){ m.ctx = ['no context given']; fix.push('context phrases missing'); }
-
-  let segs = Array.isArray(o.segs)? o.segs : [];
-  if(segs.length<2){ errs.push('need at least 2 segments, got '+segs.length); return {ok:false,errs,fix}; }
-  if(segs.length>10){ segs = segs.slice(0,10); fix.push('trimmed to 10 segments'); }
-
-  segs.forEach((sg,i)=>{
-    const t={}; const st = (sg&&sg.t)||{};
-    allKeys.forEach(k=>{
-      let v = Number(st[k]!==undefined ? st[k] : sg[k]);   // models often hoist traits to the top level
-      if(!isFinite(v)){ v=0.5; fix.push(`seg ${i+1}: trait "${k}" missing`); }
-      if(v>1&&v<=100){ v=v/100; fix.push(`seg ${i+1}: trait "${k}" rescaled from 0-100`); }
-      t[k]=clamp(v,0,1);
-    });
-    let wtp=Number(sg.wtp), sd=Number(sg.sd);
-    if(!isFinite(wtp)||wtp<=0){ wtp=10; fix.push(`seg ${i+1}: wtp defaulted`); }
-    if(!isFinite(sd)||sd<=0){ sd=Math.max(1,wtp*0.3); fix.push(`seg ${i+1}: sd defaulted`); }
-    /* A quote that never mentioned the option is not a response to the option.
-       Welding "— {O}." onto the end of one produces gibberish, so prefer to drop
-       it, and only reshape a quote into a reply when nothing else survives. */
-    const clean = (arr,kind)=>{
-      const raw = Array.isArray(arr)? arr.filter(x=>typeof x==='string'&&x.trim().length>8).map(x=>x.trim()) : [];
-      const kept = raw.filter(x=>x.includes('{O}'));
-      if(kept.length){
-        if(kept.length<raw.length) fix.push(`seg ${i+1}: dropped ${raw.length-kept.length} ${kind} quote(s) that never referenced the option`);
-        return kept.slice(0,4);
-      }
-      if(raw.length){
-        fix.push(`seg ${i+1}: no ${kind} quote referenced the option, reshaped as a reply`);
-        return ['{O}? '+raw[0]];
-      }
-      fix.push(`seg ${i+1}: no ${kind} quotes`);
-      return [kind==='pos'?'{O}? Yes, that works for me.':'{O}? No, not for me.'];
-    };
-    // {O} belongs only in quotes; models leak it into names and descriptions
-    let nm = String(sg.n||`Segment ${i+1}`).slice(0,42);
-    let bl = String(sg.b||'No description given.').slice(0,150);
-    if(nm.includes('{O}')||bl.includes('{O}')){
-      fix.push(`seg ${i+1}: stripped {O} from name/description`);
-      nm = nm.replace(/\{O\}/g,'this').trim(); bl = bl.replace(/\{O\}/g,'it').trim();
-    }
-    // urban/rural mix may arrive as 0.7, as 70, or as "70% urban"
-    let urb = sg.urban!==undefined ? sg.urban : sg.urban_rural;
-    if(typeof urb==='string'){ const mm=urb.match(/(\d+(\.\d+)?)/); urb = mm?Number(mm[1]):undefined; }
-    urb = Number(urb);
-    if(isFinite(urb)){ if(urb>1&&urb<=100) urb=urb/100; urb=clamp(urb,0,1); } else urb=undefined;
-
-    let geo = String(sg.geo||sg.country||sg.market||'').slice(0,40);
-    if(/[,;/]/.test(geo)){
-      geo = geo.split(/[,;/]+/).map(x=>x.trim()).filter(Boolean).join(' / ');
-      fix.push(`seg ${i+1}: covers several markets at once (${geo}) — the per-country breakdown will be coarse`);
-    }
-    m.segs.push({ n:nm, s:Math.max(Number(sg.s)||0, 0.01), b:bl, t, wtp, sd, geo,
-      age: String(sg.age||sg.age_range||'').slice(0,20),
-      income: String(sg.income||sg.income_level||'').slice(0,24),
-      urban: urb,
-      pos:clean(sg.pos,'pos'), neg:clean(sg.neg,'neg') });
-  });
-
-  const tot = m.segs.reduce((a,b)=>a+b.s,0);
-  if(Math.abs(tot-1)>0.02) fix.push(`shares summed to ${tot.toFixed(2)}, renormalised`);
-  m.segs.forEach(s=> s.s = s.s/tot);
-
-  // a population whose segments all behave alike cannot produce a useful answer
-  const spread = allKeys.reduce((acc,k)=>{
-    const vals=m.segs.map(s=>s.t[k]); return acc+(Math.max(...vals)-Math.min(...vals));
-  },0)/allKeys.length;
-  if(spread<0.12) errs.push(`segments are nearly identical (mean trait spread ${spread.toFixed(2)}) — the model collapsed them`);
-
-  // Asked to "split" a segment, a model will often duplicate it and change only
-  // the label. Two segments that behave identically are one segment wearing two
-  // names, and the segment table would imply a distinction that is not there.
-  const dupes=[];
-  for(let i=0;i<m.segs.length;i++) for(let j=i+1;j<m.segs.length;j++){
-    const a=m.segs[i], b=m.segs[j];
-    const d = allKeys.reduce((acc,k)=>acc+Math.abs(a.t[k]-b.t[k]),0)/allKeys.length;
-    const wd = Math.abs(a.wtp-b.wtp)/Math.max(a.wtp,b.wtp,1e-9);
-    // segments in different countries are legitimately distinct even if they behave alike
-    if(d<0.03 && wd<0.03 && (a.geo||'')===(b.geo||'')) dupes.push([a.n,b.n]);
-  }
-  dupes.forEach(([a,b])=> fix.push(`"${a}" and "${b}" are behaviourally identical — the split is cosmetic`));
-
-  return {ok:errs.length===0, market:m, errs, fix, spread, dupes};
-}
-
 const marketJSON = m => JSON.stringify({name:m.name,universe:m.universe,frame:m.frame,unit:m.unit,
   cur:m.cur,ctx:m.ctx,names:m.names,traits:m.traits||[],segs:m.segs},null,1);
 
-/* A 14B model answers the minimum it can get away with: ask for optional
-   demographics and it returns none. Rather than accept a thinner population
-   than the brief called for, detect what is missing and ask once for it. */
-function completenessGaps(mkt){
-  const g=[], S_=mkt.segs;
-  if(!S_.some(s=>s.geo))            g.push('"geo" — the country or region, on every segment');
-  if(!S_.some(s=>s.age))            g.push('"age" — a range like "25-34", on every segment');
-  if(!S_.some(s=>s.income))         g.push('"income" — "low", "middle" or "affluent", on every segment');
-  if(!S_.some(s=>s.urban!==undefined)) g.push('"urban" — share living in cities, 0 to 1, on every segment');
-  if(!(mkt.traits||[]).length)      g.push('a "traits" array of 2-4 domain dimensions, each with a matching value inside every segment\'s "t"');
-  return g;
-}
 async function llmEnrich(market, brief, gaps){
   const raw = await llmChat(SCHEMA_PROMPT,
     `You produced this population:\n\n${marketJSON(market)}\n\nIt is missing required detail. Return the SAME population with the following added. `+
