@@ -97,6 +97,29 @@ Step 2 auto-detects the server at `http://127.0.0.1:11434`, lists installed
 models, and shows a connection light. Any OpenAI-compatible or Ollama-native
 endpoint works — point it at LM Studio or llama.cpp by changing the endpoint field.
 
+**Populations are not limited to the six core traits.** A generated population
+may declare its own dimensions — health consciousness, trust in imported goods,
+familiarity with a brand, regulatory caution — and they enter the model exactly
+like the built-in six, showing up as drivers under the population's own labels.
+Mark a dimension `"invert": true` when a high score pushes *against* the option:
+health consciousness resists a snack, safety concern resists an experimental
+product.
+
+Segments also carry demographics — country, age range, income level, urban
+share — which flow down to individual agents. A Japan segment specified as
+35–44 and affluent produces agents in that band with that income, and clicking
+any one of them shows it.
+
+**Multi-market example.** The brief *"consumers across China, Japan, South
+Korea, Singapore, Thailand, Malaysia, the Philippines, Vietnam and Indonesia
+buying imported American snacks; include familiarity with American brands,
+health consciousness, trust in imported products, and willingness to try new
+snacks"* returns a six-country population in about 50 seconds, with all four
+dimensions and per-country willingness-to-pay from $3.90 to $6.10. Run a pricing
+decision against it and the segment table shows Singapore at 97% and Thailand at
+59% for the same $3.99 pack — which is the whole point of not blurring an
+audience into a single number.
+
 **Two modes**
 
 - **Generate new** — describe an audience in a sentence ("UK small-scale organic farmers deciding whether to install solar") and get a full population: segments, trait weights, willingness-to-pay distributions, and verbatim banks.
@@ -123,6 +146,14 @@ repairable and rejects what is not:
 Observed rates on qwen2.5:14b: a five-segment population typically needs
 around ten quote repairs, because the model reliably drops the `{O}` token from
 negative quotes while keeping it in positive ones.
+
+**A model answers the minimum it can get away with.** When demographics and
+custom dimensions were described as optional, qwen2.5:14b returned none of them
+— five generic segments, no countries, no extra traits, for a brief that named
+nine markets. Marking every field REQUIRED in the schema fixed it outright. A
+second safeguard remains: `completenessGaps()` checks the result for missing
+field groups and, if any are absent, sends the population back once asking for
+exactly those. The panel logs when this fires.
 
 **Cosmetic splits are flagged.** Ask a model to "split segment X into A and B"
 and it will often duplicate the segment and change only the label — same traits,

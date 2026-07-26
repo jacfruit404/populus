@@ -245,7 +245,7 @@ function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.
 const logistic = z => 1/(1+Math.exp(-z));
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
 const pct = v => (v*100).toFixed(1);
-const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4','#7fa66a','#c98fb0','#b0894f'];
+const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4','#7fa66a','#c98fb0','#b0894f','#5e9fb8','#c4a86d'];
 
 /* ============================== MARKETS ============================== */
 const MARKETS = {
@@ -356,18 +356,41 @@ const PRESETS = [
  {t:'policy',m:'uk',q:'How will the electorate respond to a proposed transit fare freeze?',o:['Two-year fare freeze funded by fuel duty','Fare freeze funded by borrowing','Discount for under-25s only']}
 ];
 
-const DIMS = [
- ['value','Price framing'],['novelty','Novelty appetite'],['trust','Institutional trust'],
- ['claim','Claim credibility'],['effort','Switching effort'],['social','Social proof']
+/* Six core behavioural dimensions, always present. `invert` means a high trait
+   value pushes AGAINST the option: high scepticism resists a claim, high
+   switching friction resists change. */
+const CORE_DIMS = [
+ {key:'price',  label:'Price framing',       invert:false},
+ {key:'novelty',label:'Novelty appetite',    invert:false},
+ {key:'trust',  label:'Institutional trust', invert:false},
+ {key:'skeptic',label:'Claim credibility',   invert:true },
+ {key:'effort', label:'Switching effort',    invert:true },
+ {key:'social', label:'Social proof',        invert:false}
 ];
-// driver labels read differently depending on what is being decided
+const TRAIT_KEYS = CORE_DIMS.map(d=>d.key);
+
+/* A population may declare extra domain dimensions — health consciousness,
+   trust in imported goods, whatever the decision actually turns on. They enter
+   the affinity calculation exactly like the core six and show up as drivers. */
+function dimsFor(mk){
+  const m = MARKETS[mk||S.market];
+  return CORE_DIMS.concat((m.traits||[]).map(t=>({key:t.key,label:t.label,invert:!!t.invert,custom:true})));
+}
+// core driver labels read differently depending on what is being decided
 const DIMLBL = {
- pricing:{value:'Price vs. reference point',effort:'Switching friction',trust:'Brand trust'},
- product:{value:'Perceived value for money',novelty:'Appetite for a new workflow',effort:'Adoption effort',trust:'Vendor trust'},
- message:{value:'Value framing in the claim',claim:'Claim credibility',trust:'Authority of the source',social:'Peer validation'},
- policy:{value:'Household cost impact',novelty:'Appetite for change',trust:'Trust it gets delivered',effort:'Disruption to routine',social:'Perceived fairness'}
+ pricing:{price:'Price vs. reference point',effort:'Switching friction',trust:'Brand trust'},
+ product:{price:'Perceived value for money',novelty:'Appetite for a new workflow',effort:'Adoption effort',trust:'Vendor trust'},
+ message:{price:'Value framing in the claim',skeptic:'Claim credibility',trust:'Authority of the source',social:'Peer validation'},
+ policy:{price:'Household cost impact',novelty:'Appetite for change',trust:'Trust it gets delivered',effort:'Disruption to routine',social:'Perceived fairness'}
 };
 const dimLabel = (k,fallback) => (DIMLBL[S.type]||{})[k] || fallback;
+function parseAgeRange(s){
+  const m = String(s||'').match(/(\d{2})\s*(?:-|–|—|to)\s*(\d{2})/);
+  if(m) return [+m[1], +m[2]];
+  const one = String(s||'').match(/(\d{2})/);
+  if(one) return [+one[1], +one[1]+12];
+  return [24,62];
+}
 
 const LEDGER = [
  ['Aluminum-free claim premium, US antiperspirant','+$0.49','+$0.52','0.03'],
@@ -391,10 +414,11 @@ let S = {
 const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
 
 /* ============================== ENGINE ============================== */
-function latent(text){
-  const r = rng(h32(text));
+// Each dimension is seeded independently, so adding a custom dimension to a
+// population does not perturb the values of the existing ones.
+function latent(text, dims){
   const o = {};
-  DIMS.forEach(d => o[d[0]] = r()*2-1);
+  dims.forEach(d => o[d.key] = rng(h32(text+'#'+d.key))()*2-1);
   return o;
 }
 function parsePrice(str){
@@ -407,20 +431,19 @@ function activeSegs(){
   const tot = list.reduce((a,b)=>a+b.s,0) || 1;
   return list.map(sg=>({...sg,w:sg.s/tot}));
 }
-function contribs(l,t){
-  return {
-    value:  l.value  *(t.price  -.5)*2,
-    novelty:l.novelty*(t.novelty-.5)*2,
-    trust:  l.trust  *(t.trust  -.5)*2,
-    claim:  l.claim  *(.5-t.skeptic)*2,
-    effort: l.effort *(.5-t.effort )*2,
-    social: l.social *(t.social -.5)*2
-  };
+function contribs(l,t,dims){
+  const c = {};
+  dims.forEach(d=>{
+    const v = t[d.key]===undefined ? 0.5 : t[d.key];
+    c[d.key] = l[d.key] * ((d.invert ? (0.5-v) : (v-0.5))*2);
+  });
+  return c;
 }
 function segZ(seg,opt){
-  const l = latent(S.q+'|'+opt+'|'+S.type);
-  const c = contribs(l,seg.t);
-  const A = (c.value+c.novelty+c.trust+c.claim+c.effort+c.social)/6;
+  const dims = dimsFor();
+  const l = latent(S.q+'|'+opt+'|'+S.type, dims);
+  const c = contribs(l,seg.t,dims);
+  const A = dims.reduce((a,d)=>a+c[d.key],0)/dims.length;
   let z, wtpTerm = 0;
   if(S.type==='pricing'){
     const p = parsePrice(opt);
@@ -436,6 +459,8 @@ function buildAgents(){
   let id = 0;
   segs.forEach(sg=>{
     const count = Math.max(4, Math.round(sg.w*AGENTS_SHOWN));
+    const [ageLo, ageHi] = parseAgeRange(sg.age);
+    const urbanShare = sg.urban===undefined ? 0.62 : sg.urban;
     for(let k=0;k<count;k++){
       // seed controls WHICH agents get drawn, not how the population behaves.
       // Same seed -> same sample. New seed -> a fresh draw from the same population.
@@ -446,7 +471,9 @@ function buildAgents(){
       out.push({
         id:id++, seg:sg.i, segRef:sg, n, u:r(),
         name:fn+' '+ln,
-        age:22+Math.floor(r()*46),
+        age: ageLo + Math.floor(r()*(Math.max(ageHi,ageLo)-ageLo+1)),
+        urban: r() < urbanShare,
+        geo: sg.geo||'', income: sg.income||'',
         ctx:M.ctx[Math.floor(r()*M.ctx.length)],
         qi:Math.floor(r()*2)
       });
@@ -507,9 +534,10 @@ function simulate(){
     : (popRate[win]-popRate[run]) <= (ci[win]+ci[run])*0.55);
 
   // drivers: winner vs runner-up, population-weighted
-  const drivers = DIMS.map(([k,label])=>{
-    const d = segs.reduce((acc,sg)=> acc + sg.w*(zmap[sg.i][win].c[k]-zmap[sg.i][run].c[k]), 0);
-    return {label:dimLabel(k,label), v:d*0.38};
+  const drivers = dimsFor().map(dim=>{
+    const d = segs.reduce((acc,sg)=> acc + sg.w*(zmap[sg.i][win].c[dim.key]-zmap[sg.i][run].c[dim.key]), 0);
+    // custom dimensions keep the population's own label; core ones adapt to decision type
+    return {label: dim.custom ? dim.label : dimLabel(dim.key, dim.label), v:d*0.38, custom:!!dim.custom};
   });
   if(S.type==='pricing'){
     const d = segs.reduce((acc,sg)=> acc + sg.w*(clamp(zmap[sg.i][win].wtpTerm,-4,4)-clamp(zmap[sg.i][run].wtpTerm,-4,4)), 0);
@@ -538,26 +566,33 @@ function quoteFor(a, oi){
    the machine. The model's only job is to emit a population spec; the physics
    of the simulation stay in simulate() where they can be audited.
 ========================================================================== */
-const TRAIT_KEYS = ['price','novelty','trust','skeptic','effort','social'];
-
-const SCHEMA_PROMPT = `You design synthetic populations for a decision-simulation engine.
+const SCHEMA_PROMPT =`You design synthetic populations for a decision-simulation engine.
 Return ONLY a JSON object, no prose, matching exactly this shape:
 
 {
-  "name": "short market name, e.g. 'UK small-scale organic farmers'",
-  "universe": "approximate size, e.g. '≈12,000 holdings'",
+  "name": "short market name, e.g. 'Asian buyers of imported US snacks'",
+  "universe": "approximate size, e.g. '≈240M urban households'",
   "frame": "one sentence describing the evidence this population would be grounded in",
   "unit": "$", "cur": "$",
-  "ctx": ["10 short life-context phrases, 2-6 words each, e.g. 'two kids, suburban'"],
+  "ctx": ["10 short life-context phrases, 2-6 words each, e.g. 'convenience store daily'"],
   "names": { "f": ["16 plausible first names for this population"], "l": ["12 plausible surnames"] },
+  "traits": [
+    { "key": "health", "label": "Health consciousness", "invert": true },
+    { "key": "import_trust", "label": "Trust in imported products", "invert": false }
+  ],
   "segs": [
     {
       "n": "Segment name, 2-4 words, evocative not generic",
       "s": 0.30,
-      "b": "one sentence on how this segment actually behaves",
-      "t": { "price":0.0-1.0, "novelty":0.0-1.0, "trust":0.0-1.0, "skeptic":0.0-1.0, "effort":0.0-1.0, "social":0.0-1.0 },
-      "wtp": 12.5,
-      "sd": 4.0,
+      "geo": "China",
+      "age": "25-34",
+      "income": "middle",
+      "urban": 0.82,
+      "b": "one sentence on what actually motivates this segment to buy",
+      "t": { "price":0.7, "novelty":0.6, "trust":0.5, "skeptic":0.4, "effort":0.3, "social":0.8,
+             "health":0.6, "import_trust":0.7 },
+      "wtp": 4.20,
+      "sd": 1.40,
       "pos": ["quote where they respond WELL, must contain the literal token {O}", "a second, different one"],
       "neg": ["quote where they respond BADLY, must contain the literal token {O}", "a second, different one"]
     }
@@ -565,14 +600,41 @@ Return ONLY a JSON object, no prose, matching exactly this shape:
 }
 
 Rules:
-- 4 to 6 segments. "s" values must sum to approximately 1.0.
-- Trait meanings: price = price sensitivity, novelty = appetite for new things,
-  trust = trust in institutions and brands, skeptic = scepticism toward claims,
-  effort = resistance to switching or extra steps, social = influence of peers.
-  Spread these values widely across segments. Segments that all score alike are useless.
-- "wtp" is that segment's willingness to pay in the currency given, "sd" its spread. Vary these meaningfully between segments.
-- Quotes must sound like a real person talking, first person, specific, no marketing language.
-  Every quote must contain {O} where the option being tested would appear.
+- EVERY field shown above is REQUIRED on every segment: "geo", "age", "income",
+  "urban", plus the full "t" block. Do not omit them. A segment without "geo"
+  and "age" is invalid.
+- The "traits" array is REQUIRED and must contain 2 to 4 domain dimensions
+  chosen for this specific decision. Never return an empty "traits" array.
+- 4 to 10 segments, summing to approximately 1.0 (or to 100 if you prefer
+  percentages). If the brief names several countries or regions, give at least
+  one segment to each named market and make them genuinely differ — a Jakarta
+  household and a Singapore expat household should not share a price
+  sensitivity or a willingness to pay.
+- The six CORE traits are required on every segment:
+    price   = price sensitivity
+    novelty = appetite for new and unfamiliar things
+    trust   = trust in institutions, brands and official claims
+    skeptic = scepticism toward marketing claims
+    effort  = resistance to switching, or to any extra step
+    social  = susceptibility to peers and social proof
+- The "traits" array carries whatever the core six do not cover — health
+  consciousness, trust in imports, brand familiarity, regulatory caution,
+  anything domain-specific. Every segment must carry a value for each one inside
+  "t". Use "invert": true when a HIGH score makes the segment LESS likely to say
+  yes (health consciousness resists a snack; safety concern resists an
+  experimental product). Do not add a dimension that merely renames a core trait.
+- If the brief lists dimensions it wants modelled, use exactly those as your
+  "traits", keeping the wording from the brief as the "label".
+- "age" is a range like "25-34". "income" is "low", "middle" or "affluent".
+  "urban" is the share living in cities as a number between 0 and 1.
+- Spread trait values widely. Segments that all score alike are useless and will
+  be rejected.
+- "wtp" is that segment's willingness to pay in the currency given, "sd" its
+  spread. Vary these meaningfully between segments — a low-income rural segment
+  and an affluent urban one should not have similar figures.
+- Quotes must sound like a real person talking: first person, specific, no
+  marketing language. Every quote must contain {O} where the option being tested
+  would appear. Do not put {O} in names or descriptions.
 - Output raw JSON only. No markdown fences, no commentary.`;
 
 function llmLog(msg, kind){
@@ -631,8 +693,23 @@ function validateMarket(o){
     unit: String(o.unit||'$').slice(0,12),
     cur: String(o.cur||'$').slice(0,3),
     ctx: Array.isArray(o.ctx)? o.ctx.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.slice(0,48)) : [],
-    names: {f:[], l:[]}, segs: []
+    names: {f:[], l:[]}, traits: [], segs: []
   };
+
+  // extra domain dimensions declared by the population
+  const seen = {};
+  (Array.isArray(o.traits)?o.traits:[]).forEach(t=>{
+    if(!t) return;
+    let key = String(t.key||t.label||'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    if(!key || TRAIT_KEYS.includes(key) || seen[key]) {
+      if(TRAIT_KEYS.includes(key)) fix.push(`custom trait "${key}" collides with a core trait, dropped`);
+      return;
+    }
+    seen[key]=1;
+    m.traits.push({key, label:String(t.label||key).slice(0,44), invert:!!t.invert});
+  });
+  if(m.traits.length>6){ m.traits=m.traits.slice(0,6); fix.push('trimmed to 6 custom dimensions'); }
+  const allKeys = TRAIT_KEYS.concat(m.traits.map(t=>t.key));
   const nf = o.names&&Array.isArray(o.names.f)?o.names.f.filter(x=>typeof x==='string'&&x.trim()):[];
   const nl = o.names&&Array.isArray(o.names.l)?o.names.l.filter(x=>typeof x==='string'&&x.trim()):[];
   m.names.f = nf.length>=4 ? nf : (fix.push('first names padded'), nf.concat(['Alex','Sam','Jordan','Riley','Casey','Morgan','Taylor','Jamie']));
@@ -641,12 +718,12 @@ function validateMarket(o){
 
   let segs = Array.isArray(o.segs)? o.segs : [];
   if(segs.length<2){ errs.push('need at least 2 segments, got '+segs.length); return {ok:false,errs,fix}; }
-  if(segs.length>8){ segs = segs.slice(0,8); fix.push('trimmed to 8 segments'); }
+  if(segs.length>10){ segs = segs.slice(0,10); fix.push('trimmed to 10 segments'); }
 
   segs.forEach((sg,i)=>{
     const t={}; const st = (sg&&sg.t)||{};
-    TRAIT_KEYS.forEach(k=>{
-      let v = Number(st[k]);
+    allKeys.forEach(k=>{
+      let v = Number(st[k]!==undefined ? st[k] : sg[k]);   // models often hoist traits to the top level
       if(!isFinite(v)){ v=0.5; fix.push(`seg ${i+1}: trait "${k}" missing`); }
       if(v>1&&v<=100){ v=v/100; fix.push(`seg ${i+1}: trait "${k}" rescaled from 0-100`); }
       t[k]=clamp(v,0,1);
@@ -667,7 +744,17 @@ function validateMarket(o){
       fix.push(`seg ${i+1}: stripped {O} from name/description`);
       nm = nm.replace(/\{O\}/g,'this').trim(); bl = bl.replace(/\{O\}/g,'it').trim();
     }
+    // urban/rural mix may arrive as 0.7, as 70, or as "70% urban"
+    let urb = sg.urban!==undefined ? sg.urban : sg.urban_rural;
+    if(typeof urb==='string'){ const mm=urb.match(/(\d+(\.\d+)?)/); urb = mm?Number(mm[1]):undefined; }
+    urb = Number(urb);
+    if(isFinite(urb)){ if(urb>1&&urb<=100) urb=urb/100; urb=clamp(urb,0,1); } else urb=undefined;
+
     m.segs.push({ n:nm, s:Math.max(Number(sg.s)||0, 0.01), b:bl, t, wtp, sd,
+      geo: String(sg.geo||sg.country||sg.market||'').slice(0,28),
+      age: String(sg.age||sg.age_range||'').slice(0,20),
+      income: String(sg.income||sg.income_level||'').slice(0,24),
+      urban: urb,
       pos:clean(sg.pos,'pos'), neg:clean(sg.neg,'neg') });
   });
 
@@ -676,9 +763,9 @@ function validateMarket(o){
   m.segs.forEach(s=> s.s = s.s/tot);
 
   // a population whose segments all behave alike cannot produce a useful answer
-  const spread = TRAIT_KEYS.reduce((acc,k)=>{
+  const spread = allKeys.reduce((acc,k)=>{
     const vals=m.segs.map(s=>s.t[k]); return acc+(Math.max(...vals)-Math.min(...vals));
-  },0)/TRAIT_KEYS.length;
+  },0)/allKeys.length;
   if(spread<0.12) errs.push(`segments are nearly identical (mean trait spread ${spread.toFixed(2)}) — the model collapsed them`);
 
   // Asked to "split" a segment, a model will often duplicate it and change only
@@ -687,13 +774,37 @@ function validateMarket(o){
   const dupes=[];
   for(let i=0;i<m.segs.length;i++) for(let j=i+1;j<m.segs.length;j++){
     const a=m.segs[i], b=m.segs[j];
-    const d = TRAIT_KEYS.reduce((acc,k)=>acc+Math.abs(a.t[k]-b.t[k]),0)/TRAIT_KEYS.length;
+    const d = allKeys.reduce((acc,k)=>acc+Math.abs(a.t[k]-b.t[k]),0)/allKeys.length;
     const wd = Math.abs(a.wtp-b.wtp)/Math.max(a.wtp,b.wtp,1e-9);
-    if(d<0.03 && wd<0.03) dupes.push([a.n,b.n]);
+    // segments in different countries are legitimately distinct even if they behave alike
+    if(d<0.03 && wd<0.03 && (a.geo||'')===(b.geo||'')) dupes.push([a.n,b.n]);
   }
   dupes.forEach(([a,b])=> fix.push(`"${a}" and "${b}" are behaviourally identical — the split is cosmetic`));
 
   return {ok:errs.length===0, market:m, errs, fix, spread, dupes};
+}
+
+const marketJSON = m => JSON.stringify({name:m.name,universe:m.universe,frame:m.frame,unit:m.unit,
+  cur:m.cur,ctx:m.ctx,names:m.names,traits:m.traits||[],segs:m.segs},null,1);
+
+/* A 14B model answers the minimum it can get away with: ask for optional
+   demographics and it returns none. Rather than accept a thinner population
+   than the brief called for, detect what is missing and ask once for it. */
+function completenessGaps(mkt){
+  const g=[], S_=mkt.segs;
+  if(!S_.some(s=>s.geo))            g.push('"geo" — the country or region, on every segment');
+  if(!S_.some(s=>s.age))            g.push('"age" — a range like "25-34", on every segment');
+  if(!S_.some(s=>s.income))         g.push('"income" — "low", "middle" or "affluent", on every segment');
+  if(!S_.some(s=>s.urban!==undefined)) g.push('"urban" — share living in cities, 0 to 1, on every segment');
+  if(!(mkt.traits||[]).length)      g.push('a "traits" array of 2-4 domain dimensions, each with a matching value inside every segment\'s "t"');
+  return g;
+}
+async function llmEnrich(market, brief, gaps){
+  const raw = await llmChat(SCHEMA_PROMPT,
+    `You produced this population:\n\n${marketJSON(market)}\n\nIt is missing required detail. Return the SAME population with the following added. `+
+    `Keep every existing segment name, share, quote and trait value exactly as they are — add only what is listed:\n- ${gaps.join('\n- ')}\n\n`+
+    `The original brief was: ${brief}`);
+  return validateMarket(extractJSON(raw));
 }
 
 async function llmGenerate(){
@@ -705,7 +816,7 @@ async function llmGenerate(){
   const editing = S.llm.mode==='edit';
   const cur = MARKETS[S.market];
   const user = editing
-    ? `Here is an existing population:\n\n${JSON.stringify({name:cur.name,universe:cur.universe,frame:cur.frame,unit:cur.unit,cur:cur.cur,ctx:cur.ctx,names:cur.names,segs:cur.segs},null,1)}\n\nApply this change and return the FULL modified object in the same schema:\n${p}`
+    ? `Here is an existing population:\n\n${marketJSON(cur)}\n\nApply this change and return the FULL modified object in the same schema:\n${p}`
     : `Design a population for: ${p}`;
   try{
     llmLog(`${editing?'Editing':'Generating'} with ${S.llm.model}…`);
@@ -713,11 +824,30 @@ async function llmGenerate(){
     const raw = await llmChat(SCHEMA_PROMPT, user);
     llmLog(`Response in ${((performance.now()-t0)/1000).toFixed(1)}s, ${raw.length} chars.`);
     const obj = extractJSON(raw);
-    const v = validateMarket(obj);
+    let v = validateMarket(obj);
     v.fix.forEach(f=>llmLog('repaired: '+f,'warn'));
     if(!v.ok){ v.errs.forEach(e=>llmLog('rejected: '+e,'err')); S.llm.busy=false; renderLLM(); return; }
+
+    // second pass for anything the model quietly skipped
+    const gaps = completenessGaps(v.market);
+    if(gaps.length){
+      llmLog(`Model skipped ${gaps.length} required field group${gaps.length>1?'s':''}. Asking again…`,'warn');
+      try{
+        const t1 = performance.now();
+        const v2 = await llmEnrich(v.market, p, gaps);
+        const after = v2.ok ? completenessGaps(v2.market).length : gaps.length;
+        if(v2.ok && after < gaps.length && v2.market.segs.length>=v.market.segs.length-1){
+          v2.fix.forEach(f=>llmLog('repaired: '+f,'warn'));
+          llmLog(`Filled in ${gaps.length-after} of ${gaps.length} in ${((performance.now()-t1)/1000).toFixed(1)}s.`);
+          v = v2;
+        } else llmLog('Second pass did not improve it; keeping the first result.','warn');
+      }catch(e){ llmLog('Second pass failed ('+e.message+'); keeping the first result.','warn'); }
+    }
     const key = 'custom_'+(Object.keys(MARKETS).filter(k=>k.startsWith('custom_')).length+1);
     MARKETS[key] = v.market;
+    if(v.market.traits.length) llmLog(`Extra dimensions: ${v.market.traits.map(t=>t.label+(t.invert?' (resists)':'')).join(', ')}`);
+    const geos = [...new Set(v.market.segs.map(s=>s.geo).filter(Boolean))];
+    if(geos.length) llmLog(`Markets covered: ${geos.join(', ')}`);
     llmLog(`Accepted "${v.market.name}" — ${v.market.segs.length} segments, trait spread ${v.spread.toFixed(2)}.`);
     S.market=key; S.segsOn=allOn(key); S.result=null; S.llm.busy=false;
     render();
@@ -829,12 +959,22 @@ function view2(){
 
   <div class="card">
     <div class="lbl">Segments in scope — click to include or exclude</div>
-    ${M.segs.map((sg,i)=>`
+    ${M.segs.map((sg,i)=>{
+      const demo=[];
+      if(sg.geo) demo.push(`<span class="pill" style="background:rgba(109,143,196,.16);color:var(--blue)">${esc(sg.geo)}</span>`);
+      if(sg.age) demo.push(`${esc(sg.age)}`);
+      if(sg.income) demo.push(`${esc(sg.income)} income`);
+      if(sg.urban!==undefined) demo.push(`${Math.round(sg.urban*100)}% urban`);
+      return `
       <div class="seg ${S.segsOn[i]?'':'off'}" onclick="toggleSeg(${i})">
-        <span class="dot" style="background:${SEGC[i]}"></span>
-        <span><span class="nm">${sg.n}</span><span class="bl">${sg.b}</span></span>
+        <span class="dot" style="background:${SEGC[i%SEGC.length]}"></span>
+        <span><span class="nm">${esc(sg.n)}</span><span class="bl">${esc(sg.b)}</span>
+          ${demo.length?`<span class="who" style="margin-top:5px">${demo.join('<span style="color:var(--faint)">·</span> ')}</span>`:''}</span>
         <span class="sh">${(sg.s*100).toFixed(0)}%<small>OF MARKET</small></span>
-      </div>`).join('')}
+      </div>`}).join('')}
+    ${M.traits&&M.traits.length?`<div class="hint" style="margin-top:12px;color:var(--teal)">
+      Extra dimensions in this population: ${M.traits.map(t=>esc(t.label)+(t.invert?' <span style="color:var(--faint)">(resists)</span>':'')).join(', ')}
+      — these enter the model alongside the core six.</div>`:''}
     <div class="hint" style="margin-top:10px">Excluded segments are removed and remaining shares are renormalised.</div>
   </div>
 
@@ -882,7 +1022,7 @@ function llmPanel(){
     <textarea class="q" style="font-size:14px;min-height:56px" oninput="S.llm.prompt=this.value"
       placeholder="${editing
         ? 'e.g. split the price-sensitive segment into renters and owners, and lower willingness to pay by a third'
-        : 'e.g. UK small-scale organic farmers deciding whether to install solar'}">${esc(L.prompt)}</textarea>
+        : 'e.g. consumers across China, Japan, South Korea, Singapore and Indonesia who buy imported American snacks — include health consciousness and trust in imported goods as dimensions'}">${esc(L.prompt)}</textarea>
     <div class="actions" style="margin-top:14px">
       <button class="btn" onclick="llmGenerate()" ${ready?'':'disabled'}>
         ${L.busy?'Working…':editing?'Apply the edit →':'Generate population →'}</button>
@@ -904,7 +1044,7 @@ function drawPop(){
   const oi = S.focusOpt;
   el.innerHTML = list.map(a=>{
     const on = S.result ? a.yes[oi] : true;
-    return `<span class="ag ${on?'':'no'}" style="background:${SEGC[a.seg]}" onclick="showAgent(${a.id})" title="${esc(a.name)}"></span>`;
+    return `<span class="ag ${on?'':'no'}" style="background:${SEGC[a.seg%SEGC.length]}" onclick="showAgent(${a.id})" title="${esc(a.name)}"></span>`;
   }).join('');
 }
 
@@ -1041,7 +1181,7 @@ function tabSegments(){
   <tbody>${R.segs.map((sg,si)=>{
     const row = R.segRates[si], best = row.indexOf(Math.max(...row));
     return `<tr>
-      <td><div class="segname"><span class="dot" style="background:${SEGC[sg.i]};margin:0"></span>${sg.n}<small>${(sg.w*100).toFixed(0)}%</small></div></td>
+      <td><div class="segname"><span class="dot" style="background:${SEGC[sg.i%SEGC.length]};margin:0"></span>${esc(sg.n)}<small>${sg.geo?esc(sg.geo)+' · ':''}${(sg.w*100).toFixed(0)}%</small></div></td>
       ${row.map((v,i)=>`<td><div class="cell" style="${heat(v)};${i===best?'outline:1px solid rgba(217,164,65,.55);font-weight:700':''}">${pct(v)}%</div></td>`).join('')}
     </tr>`}).join('')}
   <tr><td style="padding-top:12px"><b style="font-size:12.5px">Population</b></td>
@@ -1072,10 +1212,10 @@ function tabVoices(){
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px">${R.opts.map((o,i)=>
     `<button class="tile ${i===oi?'on':''}" style="padding:6px 11px;font-size:12px" onclick="S.focusOpt=${i};render()">${esc(o)}</button>`).join('')}</div>
   ${picks.map(a=>`
-    <div class="quote" style="border-left-color:${SEGC[a.seg]}">
+    <div class="quote" style="border-left-color:${SEGC[a.seg%SEGC.length]}">
       <p>“${esc(quoteFor(a,oi))}”</p>
-      <div class="who"><b style="color:var(--ink2);font-weight:600">${a.name}</b> · ${a.age} · ${a.ctx}
-        <span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg]}">${a.segRef.n}</span>
+      <div class="who"><b style="color:var(--ink2);font-weight:600">${a.name}</b> · ${a.age}${a.geo?' · '+esc(a.geo):''} · ${esc(a.ctx)}
+        <span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg%SEGC.length]}">${esc(a.segRef.n)}</span>
         <span class="pill ${a.yes[oi]?'y':'n'}">${a.yes[oi]?'WOULD '+TYPES[S.type].verb.toUpperCase():'WOULD NOT'} · p=${a.p[oi].toFixed(2)}</span>
       </div>
     </div>`).join('')}
@@ -1104,11 +1244,19 @@ function showAgent(id){
   const a = (S.result?S.result.agents:S.agents).find(x=>x.id===id); if(!a) return;
   const R = S.result;
   const M = MARKETS[S.market];
-  const traits = Object.entries(a.segRef.t).map(([k,v])=>{
-    const nm = {price:'Price sensitivity',novelty:'Novelty appetite',trust:'Institutional trust',skeptic:'Claim scepticism',effort:'Switching friction',social:'Social proof'}[k];
+  const CORE_NM = {price:'Price sensitivity',novelty:'Novelty appetite',trust:'Institutional trust',
+                   skeptic:'Claim scepticism',effort:'Switching friction',social:'Social proof'};
+  const traits = dimsFor().map(d=>{
+    const v = a.segRef.t[d.key]; if(v===undefined) return '';
     const ind = Math.round(v*10);
-    return `<div class="k">${nm}</div><div style="font-family:var(--mono);font-size:11px;color:var(--ink2)">${'▮'.repeat(ind)}<span style="color:var(--faint)">${'▯'.repeat(10-ind)}</span> ${(v*100).toFixed(0)}</div>`;
+    const nm = d.custom ? d.label : CORE_NM[d.key];
+    return `<div class="k" style="${d.custom?'color:var(--teal)':''}">${esc(nm)}</div><div style="font-family:var(--mono);font-size:11px;color:var(--ink2)">${'▮'.repeat(ind)}<span style="color:var(--faint)">${'▯'.repeat(10-ind)}</span> ${(v*100).toFixed(0)}</div>`;
   }).join('');
+  const demo = [];
+  if(a.geo) demo.push(`<div class="k">Location</div><div>${esc(a.geo)}${a.urban!==undefined?`, ${a.urban?'urban':'rural'}`:''}</div>`);
+  else if(a.urban!==undefined) demo.push(`<div class="k">Location</div><div>${a.urban?'Urban':'Rural'}</div>`);
+  if(a.income) demo.push(`<div class="k">Income</div><div>${esc(a.income)}</div>`);
+  demo.push(`<div class="k">Willingness to pay</div><div>${esc(M.cur||'')}${a.segRef.wtp} <span style="color:var(--faint)">± ${a.segRef.sd}</span></div>`);
   const resp = R ? R.opts.map((o,i)=>`
     <div class="resp">
       <div class="rt"><span>${esc(o)}</span>
@@ -1122,11 +1270,13 @@ function showAgent(id){
         <div class="avatar" style="background:${SEGC[a.seg]}">${a.name[0]}</div>
         <div style="flex:1">
           <div style="font-family:var(--serif);font-size:20px">${a.name}</div>
-          <div style="color:var(--muted);font-size:12.5px">${a.age} · ${a.ctx}</div>
-          <div style="margin-top:6px"><span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg]}">${a.segRef.n}</span></div>
+          <div style="color:var(--muted);font-size:12.5px">${a.age}${a.geo?' · '+esc(a.geo):''} · ${esc(a.ctx)}</div>
+          <div style="margin-top:6px"><span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg%SEGC.length]}">${esc(a.segRef.n)}</span></div>
         </div>
         <button class="x" onclick="closeAgent()">✕</button>
       </div>
+      <div class="lbl">Profile</div>
+      <div class="kv">${demo.join('')}</div>
       <div class="lbl">Modelled disposition</div>
       <div class="kv">${traits}</div>
       <div class="lbl">Response to each option</div>
