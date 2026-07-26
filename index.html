@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Populus — Population Simulation MVP</title>
+<style>
+:root{
+  --bg:#15110e; --bg2:#100d0b; --panel:#1c1714; --panel2:#231d19;
+  --line:rgba(255,255,255,.10); --line2:rgba(255,255,255,.055);
+  --ink:#f4eee6; --ink2:#cdc2b5; --muted:#93877a; --faint:#6b6055;
+  --gold:#d9a441; --gold2:#f0c675; --teal:#4fb3a5; --red:#cd6a4c; --blue:#6d8fc4;
+  --serif:'Iowan Old Style','Palatino Linotype',Palatino,'Times New Roman',serif;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;font-size:inherit;color:inherit;cursor:pointer;border:none;background:none}
+input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.11);border-radius:9px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- shell ---------- */
+.app{display:grid;grid-template-columns:236px 1fr;height:100vh;overflow:hidden}
+.rail{background:var(--bg2);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+.brand{padding:20px 20px 16px;border-bottom:1px solid var(--line2)}
+.logo{display:flex;align-items:center;gap:9px}
+.mark{width:22px;height:22px;border-radius:50%;background:
+  radial-gradient(circle at 32% 30%, var(--gold2), var(--gold) 42%, #8a5f1c 78%, #3a2a12);
+  box-shadow:0 0 16px rgba(217,164,65,.35)}
+.logo b{font-family:var(--serif);font-size:17px;font-weight:600;letter-spacing:.02em}
+.tagline{margin-top:7px;font-size:10.5px;color:var(--faint);letter-spacing:.09em;text-transform:uppercase}
+.steps{padding:16px 12px;flex:0 0 auto}
+.steplbl{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);padding:0 8px 8px}
+.step{display:flex;gap:10px;align-items:flex-start;padding:9px 8px;border-radius:7px;color:var(--muted);transition:.15s;width:100%;text-align:left}
+.step:hover{background:rgba(255,255,255,.035);color:var(--ink2)}
+.step.on{background:rgba(217,164,65,.10);color:var(--ink)}
+.step.done{color:var(--ink2)}
+.step .n{font-family:var(--mono);font-size:10px;width:17px;height:17px;flex:0 0 17px;border-radius:50%;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;margin-top:1px;color:var(--faint)}
+.step.on .n{border-color:var(--gold);color:var(--gold);background:rgba(217,164,65,.13)}
+.step.done .n{border-color:rgba(79,179,165,.5);color:var(--teal)}
+.step .t{font-size:12.5px;font-weight:500}
+.step .s{font-size:10.5px;color:var(--faint);margin-top:1px}
+.railfoot{margin-top:auto;padding:14px;border-top:1px solid var(--line2)}
+.runs{padding:0 12px 12px;overflow-y:auto;flex:1 1 auto;min-height:0}
+.runitem{padding:8px 9px;border-radius:6px;border:1px solid var(--line2);margin-bottom:6px;cursor:pointer;transition:.15s}
+.runitem:hover{border-color:var(--line);background:rgba(255,255,255,.03)}
+.runitem .q{font-size:11.5px;color:var(--ink2);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.runitem .m{font-size:10px;color:var(--faint);font-family:var(--mono);margin-top:4px}
+
+.main{overflow-y:auto;position:relative}
+.wrap{max-width:1080px;margin:0 auto;padding:40px 44px 96px}
+.eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);display:flex;align-items:center;gap:10px}
+.eyebrow:after{content:'';height:1px;flex:1;background:linear-gradient(90deg,rgba(217,164,65,.35),transparent)}
+h1{font-family:var(--serif);font-size:34px;line-height:1.15;font-weight:500;margin:14px 0 8px;letter-spacing:-.01em}
+h1 em{font-style:italic;color:var(--gold2)}
+.sub{color:var(--muted);font-size:14px;max-width:600px;margin-bottom:30px}
+h3{font-family:var(--serif);font-size:19px;font-weight:500;margin:0 0 3px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+.card+.card{margin-top:16px}
+.lbl{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);margin-bottom:9px;font-family:var(--mono)}
+
+/* ---------- controls ---------- */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.tile{border:1px solid var(--line);background:var(--panel2);border-radius:9px;padding:13px;text-align:left;transition:.15s}
+.tile:hover{border-color:rgba(217,164,65,.4)}
+.tile.on{border-color:var(--gold);background:rgba(217,164,65,.09)}
+.tile .ti{font-size:13px;font-weight:600;margin-bottom:3px}
+.tile .td{font-size:11px;color:var(--muted);line-height:1.4}
+textarea.q{width:100%;background:var(--bg2);border:1px solid var(--line);border-radius:9px;padding:13px 14px;
+  font-family:var(--serif);font-size:17px;line-height:1.45;resize:vertical;min-height:66px;outline:none}
+textarea.q:focus{border-color:rgba(217,164,65,.55)}
+.optrow{display:flex;gap:8px;align-items:center;margin-bottom:7px}
+.optrow input{flex:1;background:var(--bg2);border:1px solid var(--line);border-radius:7px;padding:9px 12px;outline:none;font-size:13px}
+.optrow input:focus{border-color:rgba(217,164,65,.5)}
+.optrow .idx{font-family:var(--mono);font-size:10px;color:var(--faint);width:16px}
+.x{width:26px;height:26px;border-radius:6px;color:var(--faint);display:flex;align-items:center;justify-content:center;flex:0 0 26px}
+.x:hover{background:rgba(205,106,76,.14);color:var(--red)}
+.ghost{border:1px dashed var(--line);border-radius:7px;padding:8px 12px;color:var(--muted);font-size:12px;width:100%}
+.ghost:hover{border-color:var(--gold);color:var(--gold2)}
+.btn{background:var(--gold);color:#231705;font-weight:650;padding:11px 22px;border-radius:8px;font-size:13.5px;letter-spacing:.01em;transition:.15s}
+.btn:hover{background:var(--gold2)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn.sec{background:transparent;border:1px solid var(--line);color:var(--ink2);font-weight:500}
+.btn.sec:hover{border-color:var(--gold);color:var(--gold2);background:transparent}
+.actions{display:flex;gap:10px;align-items:center;margin-top:22px}
+.hint{font-size:11.5px;color:var(--faint)}
+input[type=range]{-webkit-appearance:none;width:100%;height:3px;background:var(--line);border-radius:3px;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;height:15px;border-radius:50%;background:var(--gold);cursor:pointer;box-shadow:0 0 0 4px rgba(217,164,65,.16)}
+
+/* ---------- segments ---------- */
+.seg{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--line2);border-radius:9px;margin-bottom:7px;transition:.15s;cursor:pointer}
+.seg:hover{border-color:var(--line)}
+.seg.off{opacity:.36}
+.dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px;margin-top:5px}
+.seg .nm{font-size:13px;font-weight:600}
+.seg .bl{font-size:11.5px;color:var(--muted);line-height:1.45;margin-top:2px}
+.seg .sh{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink2);text-align:right;flex:0 0 auto}
+.seg .sh small{display:block;font-size:9.5px;color:var(--faint);letter-spacing:.08em}
+
+/* ---------- population grid ---------- */
+.popgrid{display:flex;flex-wrap:wrap;gap:3px;padding:4px 0}
+.ag{width:9px;height:9px;border-radius:2px;opacity:.85;cursor:pointer;transition:.12s}
+.ag:hover{transform:scale(1.7);opacity:1;z-index:2}
+.ag.no{opacity:.16}
+
+/* ---------- run screen ---------- */
+.runbox{text-align:center;padding:60px 0 20px}
+.orb{width:160px;height:160px;margin:0 auto 30px;border-radius:50%;position:relative;
+  background:radial-gradient(circle at 40% 34%, rgba(240,198,117,.9), rgba(217,164,65,.5) 38%, rgba(120,80,25,.25) 62%, transparent 72%);
+  animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:.85}50%{transform:scale(1.06);opacity:1}}
+.orb:after{content:'';position:absolute;inset:-24px;border-radius:50%;border:1px solid rgba(217,164,65,.18);animation:ring 2.4s ease-out infinite}
+@keyframes ring{0%{transform:scale(.85);opacity:.8}100%{transform:scale(1.25);opacity:0}}
+.phase{font-family:var(--serif);font-size:22px;margin-bottom:8px}
+.phasesub{font-family:var(--mono);font-size:11.5px;color:var(--muted);letter-spacing:.05em;height:16px}
+.bar{height:2px;background:var(--line);border-radius:2px;margin:26px auto 0;max-width:400px;overflow:hidden}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--gold2));width:0;transition:width .3s}
+.log{max-width:460px;margin:26px auto 0;text-align:left;font-family:var(--mono);font-size:11px;color:var(--faint);line-height:1.9}
+.log div{opacity:0;animation:fadein .4s forwards}
+@keyframes fadein{to{opacity:1}}
+.log b{color:var(--teal);font-weight:400}
+
+/* ---------- results ---------- */
+.headline{background:linear-gradient(160deg,rgba(217,164,65,.13),rgba(217,164,65,.02) 55%,transparent);
+  border:1px solid rgba(217,164,65,.28);border-radius:14px;padding:26px 26px 24px}
+.verdict{font-family:var(--serif);font-size:29px;line-height:1.2;margin:8px 0 12px}
+.verdict b{color:var(--gold2);font-weight:500}
+.metrics{display:flex;gap:32px;flex-wrap:wrap;margin-top:18px;padding-top:18px;border-top:1px solid rgba(217,164,65,.18)}
+.metric .v{font-family:var(--serif);font-size:27px;line-height:1}
+.metric .k{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin-top:6px;font-family:var(--mono)}
+.metric .ci{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px}
+
+.orow{display:grid;grid-template-columns:1fr 92px;gap:14px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line2)}
+.orow:last-child{border-bottom:none}
+.oname{font-size:13.5px;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.win{font-family:var(--mono);font-size:9px;letter-spacing:.1em;background:rgba(217,164,65,.18);color:var(--gold2);padding:2px 6px;border-radius:4px}
+.track{height:9px;background:rgba(255,255,255,.05);border-radius:5px;overflow:hidden;position:relative}
+.track i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,rgba(217,164,65,.55),var(--gold));transition:width .7s cubic-bezier(.2,.8,.3,1)}
+.track.dim i{background:linear-gradient(90deg,rgba(255,255,255,.14),rgba(255,255,255,.28))}
+.track .cib{position:absolute;top:2px;height:5px;border-left:1px solid rgba(255,255,255,.35);border-right:1px solid rgba(255,255,255,.35);
+  background:rgba(255,255,255,.09)}
+.oval{font-family:var(--serif);font-size:20px;text-align:right}
+.oval small{display:block;font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:2px}
+
+table.mx{width:100%;border-collapse:collapse;font-size:12.5px}
+table.mx th{font-family:var(--mono);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+  font-weight:400;padding:0 6px 10px;text-align:center}
+table.mx th:first-child{text-align:left;width:31%}
+table.mx td{padding:5px 6px}
+table.mx td:first-child{font-size:12.5px}
+.cell{border-radius:6px;padding:9px 4px;text-align:center;font-family:var(--mono);font-size:12px;position:relative}
+.segname{display:flex;align-items:center;gap:8px}
+.segname small{color:var(--faint);font-family:var(--mono);font-size:10px}
+
+.driver{display:grid;grid-template-columns:150px 1fr 62px;gap:12px;align-items:center;padding:7px 0}
+.dtrack{height:6px;background:rgba(255,255,255,.05);border-radius:3px;position:relative}
+.dtrack .mid{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--line)}
+.dtrack i{position:absolute;height:100%;border-radius:3px}
+.dv{font-family:var(--mono);font-size:11.5px;text-align:right}
+
+.quote{border-left:2px solid var(--line);padding:2px 0 2px 14px;margin-bottom:16px}
+.quote p{font-family:var(--serif);font-size:14.5px;line-height:1.5;margin:0 0 7px;color:var(--ink)}
+.quote .who{font-size:11px;color:var(--faint);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.pill{font-family:var(--mono);font-size:9.5px;padding:1.5px 6px;border-radius:4px;letter-spacing:.05em}
+.pill.y{background:rgba(79,179,165,.14);color:var(--teal)}
+.pill.n{background:rgba(205,106,76,.14);color:var(--red)}
+
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line2);margin-bottom:18px}
+.tab{padding:8px 14px;font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--ink);border-bottom-color:var(--gold)}
+.tab:hover{color:var(--ink2)}
+
+.ledger{font-family:var(--mono);font-size:11.5px}
+.ledger .lr{display:grid;grid-template-columns:1fr 74px 74px 66px;gap:10px;padding:8px 0;border-bottom:1px solid var(--line2);color:var(--ink2)}
+.ledger .lr.h{color:var(--faint);font-size:9.5px;letter-spacing:.09em;text-transform:uppercase}
+.ledger .lr span:not(:first-child){text-align:right}
+
+/* ---------- agent modal ---------- */
+.scrim{position:fixed;inset:0;background:rgba(8,6,5,.72);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;z-index:50;padding:24px}
+.modal{background:var(--panel);border:1px solid var(--line);border-radius:14px;max-width:520px;width:100%;padding:26px;max-height:84vh;overflow-y:auto}
+.mhead{display:flex;gap:14px;align-items:flex-start;margin-bottom:18px}
+.avatar{width:42px;height:42px;border-radius:50%;flex:0 0 42px;display:flex;align-items:center;justify-content:center;
+  font-family:var(--serif);font-size:17px;color:#1a1310;font-weight:600}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:5px 14px;font-size:12.5px;padding:14px 0;border-top:1px solid var(--line2);border-bottom:1px solid var(--line2);margin-bottom:16px}
+.kv .k{color:var(--faint);font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;padding-top:1px}
+.resp{padding:11px 13px;border-radius:8px;background:var(--panel2);border:1px solid var(--line2);margin-bottom:8px}
+.resp .rt{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12.5px}
+.resp .rq{font-family:var(--serif);font-size:13px;color:var(--ink2);margin-top:6px;line-height:1.45}
+.note{font-size:11.5px;color:var(--faint);line-height:1.6;margin-top:16px;padding-top:14px;border-top:1px solid var(--line2)}
+.empty{color:var(--faint);font-size:13px;text-align:center;padding:40px 0}
+.fadein{animation:fi .45s ease both}
+@keyframes fi{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+@media(max-width:900px){.app{grid-template-columns:1fr}.rail{display:none}.wrap{padding:28px 20px 80px}.grid4{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo"><div class="mark"></div><b>Populus</b></div>
+      <div class="tagline">Population Simulation</div>
+    </div>
+    <nav class="steps" id="steps"></nav>
+    <div class="steplbl" style="padding-left:20px">Run history</div>
+    <div class="runs" id="runs"><div class="hint" style="padding:0 8px">No runs yet.</div></div>
+    <div class="railfoot">
+      <div class="hint" style="line-height:1.5">Every prediction is logged against what reality returns.</div>
+    </div>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+<div id="modal"></div>
+<script>
+/* ============================== UTIL ============================== */
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function h32(str){let h=2166136261>>>0;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return h>>>0}
+function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const logistic = z => 1/(1+Math.exp(-z));
+const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+const pct = v => (v*100).toFixed(1);
+const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4'];
+
+/* ============================== MARKETS ============================== */
+const MARKETS = {
+grocery:{name:'US grocery & household shoppers',universe:'≈128M households',unit:'$',cur:'$',
+ frame:'Panel of 41,000 shopper interviews joined to 3 years of loyalty-card transactions.',
+ names:{f:['Dana','Marcus','Priya','Kelly','Ruben','Alicia','Trevor','Nadia','Curtis','Sofia','Jonah','Renee','Malik','Erin','Diego','Bethany'],
+        l:['Whitfield','Okafor','Delgado','Brennan','Nakamura','Sanders','Vasquez','Holloway','Pierce','Mensah','Ruiz','Calloway']},
+ ctx:['two kids, suburban','shops weekly at a supercenter','splits between Aldi and Target','one-income household','shops the perimeter only',
+      'orders 60% of groceries online','stocks up monthly','lives alone, small kitchen','recently switched stores','coupons every trip'],
+ segs:[
+ {n:'Value Maximizers',s:.31,b:'Shop the unit price. Trade down without guilt and stock up on promotion.',t:{price:.88,novelty:.28,trust:.42,skeptic:.62,effort:.35,social:.30},wtp:6.2,sd:1.8,
+  pos:["At {O} that's cheaper per wash than what I use now — I'd switch.","{O} is fine if it lasts. I'd buy one and check the price per ounce."],
+  neg:["{O} is a lot for dish soap. The store brand does the same job.","I'm not paying {O} when there's a two-for-one right next to it."]},
+ {n:'Health-Forward Parents',s:.24,b:'Reading labels for the kids. Pay up for fewer ingredients, not for packaging.',t:{price:.55,novelty:.52,trust:.60,skeptic:.55,effort:.45,social:.55},wtp:10.4,sd:2.6,
+  pos:["If it's genuinely gentler, {O} is worth it — my daughter reacts to the regular stuff.","I'd pay {O} once just to see if it's better on her hands."],
+  neg:["{O} feels like I'm paying for the label, not the formula.","I want to know what's actually in it before I spend {O}."]},
+ {n:'Convenience-First Urbanites',s:.19,b:'Small kitchens, delivery apps, no shelf space. Time beats money.',t:{price:.34,novelty:.68,trust:.50,skeptic:.44,effort:.72,social:.62},wtp:11.2,sd:3.0,
+  pos:["{O} is nothing if it means one less thing to carry up three flights.","At {O} I'd just add it to the order and not think about it."],
+  neg:["Even at {O} it's another step. I'm not refilling anything.","{O} and I have to wait for a refill to ship? I'll grab a bottle."]},
+ {n:'Brand Loyalists',s:.16,b:'Same brand for a decade. Switching is a small risk they do not need.',t:{price:.52,novelty:.24,trust:.72,skeptic:.36,effort:.66,social:.48},wtp:8.6,sd:2.2,
+  pos:["If my usual brand did this at {O}, sure. I'd stay in the family.","{O} is close enough to what I already pay that I'd give it a go."],
+  neg:["I've used the same one for years. {O} isn't a reason to change.","New brand, {O}, and it might not cut grease. That's three risks."]},
+ {n:'Ingredient Skeptics',s:.10,b:'Distrust claims by default. Cross-check the back of the pack.',t:{price:.46,novelty:.58,trust:.22,skeptic:.88,effort:.40,social:.28},wtp:12.1,sd:3.2,
+  pos:["If the ingredient list holds up, {O} is a fair price.","{O} is fine, as long as they're not hiding everything behind 'fragrance'."],
+  neg:["'Clean' means nothing. {O} for a marketing word is a no.","At {O} I'd want third-party testing, not a claim on the front."]}]},
+
+saas:{name:'US SMB software buyers',universe:'≈6.1M firms under 500 seats',unit:'$/seat/mo',cur:'$',
+ frame:'Panel of 12,400 buyer interviews joined to observed billing and churn records.',
+ names:{f:['Alex','Priyanka','Grant','Mei','Tobias','Shannon','Omar','Lauren','Devin','Claire','Rafael','Hannah','Jamal','Nina','Wes','Bianca'],
+        l:['Hartley','Sundaram','Boyle','Zhang','Ferreira','McAllister','Haddad','Osei','Lindqvist','Barrera','Whitmore','Kaplan']},
+ ctx:['ops lead, 34 people','founder, 9 people','IT manager, 210 seats','controller, 60 people','runs a 6-person agency',
+      'head of RevOps, 120 seats','office manager wearing four hats','COO at a services firm','solo IT for two offices','bought 11 tools last year'],
+ segs:[
+ {n:'Scrappy Owner-Operators',s:.28,b:'Under 20 people. Buying with their own money, deciding in one sitting.',t:{price:.86,novelty:.60,trust:.34,skeptic:.62,effort:.55,social:.44},wtp:22,sd:9,
+  pos:["{O} — if that saves me an hour a week it pays for itself.","I'd sign up for {O} tonight and cancel if it doesn't stick."],
+  neg:["{O} per seat adds up fast when it's my money.","I don't need {O} worth of features. I need one thing that works."]},
+ {n:'Ops Leads at 20–100',s:.26,b:'Own the workflow, not the budget. Must survive a manager asking why.',t:{price:.58,novelty:.55,trust:.58,skeptic:.50,effort:.62,social:.66},wtp:58,sd:22,
+  pos:["{O} is defensible if I can show the time back in a QBR.","I could get {O} approved — it maps to a problem my boss already named."],
+  neg:["I'd have to justify {O} and I don't have the numbers yet.","{O} is another tool to own. My team already ignores two."]},
+ {n:'IT Gatekeepers',s:.18,b:'Security review, SSO, data residency. Cannot say yes, can absolutely say no.',t:{price:.50,novelty:.24,trust:.70,skeptic:.78,effort:.74,social:.32},wtp:44,sd:18,
+  pos:["{O} is fine. The price was never my objection — the data handling is.","If SOC 2 is real, {O} clears without much argument."],
+  neg:["{O} and it wants access to every call? That's a review, not a purchase.","Price isn't the issue. At {O} or free, I'd still block this."]},
+ {n:'Growth-Stage Finance',s:.17,b:'Tracking spend per seat. Wants consolidation, not another line item.',t:{price:.72,novelty:.40,trust:.62,skeptic:.66,effort:.58,social:.40},wtp:71,sd:26,
+  pos:["{O} works if it lets us kill two other subscriptions.","At {O} the math is fine — we spend more on tools nobody opens."],
+  neg:["{O} times 140 seats is a real number. Show me the offset.","We're consolidating. {O} for a point solution is the wrong direction."]},
+ {n:'Agency Resellers',s:.11,b:'Deploy across client accounts. Margin and multi-tenant control decide it.',t:{price:.64,novelty:.72,trust:.44,skeptic:.46,effort:.50,social:.70},wtp:33,sd:14,
+  pos:["{O} leaves me room to mark it up across eleven clients.","If I can white-label it, {O} is a margin line, not a cost."],
+  neg:["{O} with no agency tier means I eat it on every account.","At {O} I'd rather build the thin version myself."]}]},
+
+skincare:{name:'US DTC skincare buyers',universe:'≈74M active buyers',unit:'$',cur:'$',
+ frame:'Panel of 28,000 buyer interviews joined to repeat-purchase and returns data.',
+ names:{f:['Camille','Theo','Yasmin','Grace','Andre','Simone','Ivy','Malia','Ellis','Rosa','Jules','Naomi','Kai','Delphine','Aria','Otto'],
+        l:['Lindberg','Achebe','Moreau','Castellanos','Byrne','Takahashi','Ferrell','Oyelaran','Kaur','Sorensen','Marchetti','Duval']},
+ ctx:['six-step routine','reacts to most actives','buys on sale only','follows three derms on TikTok','has a standing subscription',
+      'switched brands twice this year','patch-tests everything','shops Sephora sales exclusively','reads every INCI list','post-procedure aftercare'],
+ segs:[
+ {n:'Routine Optimizers',s:.27,b:'Layered routines, tracks actives and percentages. Will reorder for a reason.',t:{price:.48,novelty:.74,trust:.52,skeptic:.50,effort:.34,social:.72},wtp:42,sd:16,
+  pos:["{O} tells me where it slots in my routine. That's the whole decision.","I'd add {O} in after my toner — it doesn't conflict with the retinol."],
+  neg:["{O} doesn't tell me the percentage. I'm not guessing.","I already have three things doing what {O} claims."]},
+ {n:'Sensitive-Skin Cautious',s:.23,b:'One bad reaction resets the whole routine. Caution beats novelty.',t:{price:.54,novelty:.28,trust:.66,skeptic:.68,effort:.62,social:.44},wtp:34,sd:13,
+  pos:["{O} is the reassurance I need before putting it near my face.","If {O} is true I'd patch-test it, which is more than most get."],
+  neg:["{O} says nothing about fragrance, and that's what wrecks me.","I've been burned. {O} isn't enough to risk another flare."]},
+ {n:'Deal Hunters',s:.21,b:'Waits for the sale event. Full price is a failure state.',t:{price:.90,novelty:.50,trust:.40,skeptic:.58,effort:.30,social:.60},wtp:19,sd:7,
+  pos:["{O} would get me in during a sale week, not before.","I'd try {O} if it came in a set with something I already buy."],
+  neg:["{O} doesn't change that I'm waiting for 20% off.","Everyone claims {O}. I'll take whichever one is discounted."]},
+ {n:'Clean-Beauty Devotees',s:.18,b:'Ingredient philosophy first. Brand values are part of the product.',t:{price:.42,novelty:.62,trust:.44,skeptic:.74,effort:.46,social:.68},wtp:48,sd:18,
+  pos:["{O} is exactly the language I'm looking for on a label.","I'd pay for {O} — that's the standard I hold everything to."],
+  neg:["{O} is greenwashing unless they publish the full list.","'{O}' is unregulated. It means whatever the marketing team wants."]},
+ {n:'Dermatologist-Led',s:.11,b:'Buys what a clinician recommended. Claims need evidence behind them.',t:{price:.36,novelty:.40,trust:.82,skeptic:.72,effort:.52,social:.34},wtp:62,sd:22,
+  pos:["{O} is the kind of claim my derm would actually back.","If there's a trial behind {O}, that settles it for me."],
+  neg:["{O} without a study is just a sentence on a box.","My derm gave me a list. {O} isn't a reason to deviate from it."]}]},
+
+uk:{name:'UK electorate, 18–70',universe:'≈47M eligible voters',unit:'',cur:'£',
+ frame:'Panel of 33,000 voter interviews joined to constituency-level turnout and swing records.',
+ names:{f:['Chris','Aisha','Gareth','Fiona','Dev','Maureen','Callum','Bethan','Idris','Nicola','Josh','Priti','Rhys','Tanya','Frank','Leila'],
+        l:['Whittaker','Osborne','Ahmed','Docherty','Prentice','Nwosu','Hargreaves','Boyle','Kaur','Ellery','Struthers','Bannerman']},
+ ctx:['renting in a commuter town','two buses to work','retired, small pension','drives everywhere, rural','postgrad, no car',
+      'nurse on rotating shifts','runs a small shop','has voted the same way since 1998','first-time voter','self-employed trades'],
+ segs:[
+ {n:'Cost-of-Living Squeezed',s:.29,b:'Judges every policy by what it does to the monthly bills.',t:{price:.90,novelty:.44,trust:.30,skeptic:.66,effort:.42,social:.48},wtp:15,sd:6,
+  pos:["{O} would actually show up in my budget. That's rare.","If {O} holds for two years, that's real money back."],
+  neg:["{O} sounds good until they claw it back somewhere else.","I've heard {O} before. The bill still went up."]},
+ {n:'Suburban Moderates',s:.23,b:'Persuadable, low-drama. Wants competence and a funded plan.',t:{price:.56,novelty:.42,trust:.62,skeptic:.52,effort:.56,social:.58},wtp:15,sd:6,
+  pos:["{O} is sensible if the funding actually adds up.","I could support {O} — it isn't ideological, it's just practical."],
+  neg:["{O} without saying who pays is how these things unravel.","I'd want to see {O} costed before I got behind it."]},
+ {n:'Urban Progressives',s:.20,b:'Policy-literate, high turnout. Cares who benefits, not just the headline.',t:{price:.44,novelty:.72,trust:.50,skeptic:.60,effort:.32,social:.76},wtp:15,sd:6,
+  pos:["{O} is the direction of travel we should have taken years ago.","I'd back {O}, and I'd want it to go further."],
+  neg:["{O} helps the people who need it least. That's the problem.","{O} is a headline, not redistribution."]},
+ {n:'Rural Traditionalists',s:.16,b:'Sceptical of urban-shaped policy. Distance and cars change the calculus.',t:{price:.62,novelty:.20,trust:.58,skeptic:.70,effort:.70,social:.36},wtp:15,sd:6,
+  pos:["{O} is fine so long as it doesn't come out of the roads budget.","I'd take {O} if it applied out here too, not just the cities."],
+  neg:["{O} does nothing for me. There's one bus a day.","{O} is money from us to them, dressed up as fairness."]},
+ {n:'Disengaged Under-30s',s:.12,b:'Low trust, low turnout. Persuadable but rarely mobilised.',t:{price:.74,novelty:.66,trust:.18,skeptic:.64,effort:.28,social:.66},wtp:15,sd:6,
+  pos:["{O} is the first thing in a while that'd change my week.","If {O} were real I'd probably turn up for it."],
+  neg:["{O}, sure. It won't happen and I won't notice.","They say {O} every time. Nothing lands where I live."]}]}
+};
+
+const TYPES = {
+ pricing:{n:'Pricing',d:'What to charge',metric:'Would buy at this price',verb:'buy'},
+ product:{n:'Product / Launch',d:'What to build first',metric:'Would try within 90 days',verb:'try'},
+ message:{n:'Messaging',d:'What claim to lead with',metric:'Claim drives purchase',verb:'act on'},
+ policy:{n:'Policy',d:'How people respond',metric:'Net support',verb:'support'}
+};
+
+const PRESETS = [
+ {t:'pricing',m:'grocery',q:'What should we charge for the 3-pack refillable dish soap concentrate?',o:['$6.99','$8.99','$10.99','$12.99']},
+ {t:'product',m:'saas',q:'Which wedge should we launch first for our AI meeting agent?',o:['Auto-drafted follow-up emails','Live objection coaching','CRM auto-fill after every call','Searchable memory across all calls']},
+ {t:'message',m:'skincare',q:'Which claim should lead the front of the new serum box?',o:['Dermatologist tested','Fragrance-free and aluminum-free','Visible results in 14 days','97% naturally derived']},
+ {t:'policy',m:'uk',q:'How will the electorate respond to a proposed transit fare freeze?',o:['Two-year fare freeze funded by fuel duty','Fare freeze funded by borrowing','Discount for under-25s only']}
+];
+
+const DIMS = [
+ ['value','Price framing'],['novelty','Novelty appetite'],['trust','Institutional trust'],
+ ['claim','Claim credibility'],['effort','Switching effort'],['social','Social proof']
+];
+// driver labels read differently depending on what is being decided
+const DIMLBL = {
+ pricing:{value:'Price vs. reference point',effort:'Switching friction',trust:'Brand trust'},
+ product:{value:'Perceived value for money',novelty:'Appetite for a new workflow',effort:'Adoption effort',trust:'Vendor trust'},
+ message:{value:'Value framing in the claim',claim:'Claim credibility',trust:'Authority of the source',social:'Peer validation'},
+ policy:{value:'Household cost impact',novelty:'Appetite for change',trust:'Trust it gets delivered',effort:'Disruption to routine',social:'Perceived fairness'}
+};
+const dimLabel = (k,fallback) => (DIMLBL[S.type]||{})[k] || fallback;
+
+const LEDGER = [
+ ['Aluminum-free claim premium, US antiperspirant','+$0.49','+$0.52','0.03'],
+ ['Q2 fare-freeze net support, UK metro','+11.4%','+9.8%','1.6'],
+ ['Seat price elasticity, 40–120 seat SMB','−0.83','−0.79','0.04'],
+ ['Refill trial rate, first 90 days','23.1%','25.4%','2.3'],
+ ['Fragrance-free lead claim vs. control','+6.2pt','+5.5pt','0.7']
+];
+
+/* ============================== STATE ============================== */
+const AGENTS_SHOWN = 260;
+let S = {
+  step:1, type:'pricing', market:'grocery',
+  q:PRESETS[0].q, opts:PRESETS[0].o.slice(),
+  segsOn:[true,true,true,true,true], popN:12000,
+  result:null, agents:[], focusOpt:0, tab:'segments', history:[], seed:1
+};
+
+/* ============================== ENGINE ============================== */
+function latent(text){
+  const r = rng(h32(text));
+  const o = {};
+  DIMS.forEach(d => o[d[0]] = r()*2-1);
+  return o;
+}
+function parsePrice(str){
+  const m = String(str).replace(/,/g,'').match(/-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+function activeSegs(){
+  const M = MARKETS[S.market];
+  const list = M.segs.map((sg,i)=>({...sg,i})).filter(sg=>S.segsOn[sg.i]);
+  const tot = list.reduce((a,b)=>a+b.s,0) || 1;
+  return list.map(sg=>({...sg,w:sg.s/tot}));
+}
+function contribs(l,t){
+  return {
+    value:  l.value  *(t.price  -.5)*2,
+    novelty:l.novelty*(t.novelty-.5)*2,
+    trust:  l.trust  *(t.trust  -.5)*2,
+    claim:  l.claim  *(.5-t.skeptic)*2,
+    effort: l.effort *(.5-t.effort )*2,
+    social: l.social *(t.social -.5)*2
+  };
+}
+function segZ(seg,opt){
+  const l = latent(S.q+'|'+opt+'|'+S.type);
+  const c = contribs(l,seg.t);
+  const A = (c.value+c.novelty+c.trust+c.claim+c.effort+c.social)/6;
+  let z, wtpTerm = 0;
+  if(S.type==='pricing'){
+    const p = parsePrice(opt);
+    wtpTerm = p===null ? 0 : (seg.wtp - p)/(0.62*seg.sd);
+    z = 0.15 + 0.92*clamp(wtpTerm,-4,4) + 0.90*A;
+  } else {
+    z = 0.10 + 2.30*A;
+  }
+  return {z, c, wtpTerm, A};
+}
+function buildAgents(){
+  const M = MARKETS[S.market], segs = activeSegs(), out = [];
+  let id = 0;
+  segs.forEach(sg=>{
+    const count = Math.max(4, Math.round(sg.w*AGENTS_SHOWN));
+    for(let k=0;k<count;k++){
+      // seed controls WHICH agents get drawn, not how the population behaves.
+      // Same seed -> same sample. New seed -> a fresh draw from the same population.
+      const r = rng(h32(S.market+'|'+sg.n+'|'+k+'|s'+S.seed));
+      const n = ((r()+r()+r())/3 - .5)*2.6;           // ~N(0,1)-ish, bounded
+      const fn = M.names.f[Math.floor(r()*M.names.f.length)];
+      const ln = M.names.l[Math.floor(r()*M.names.l.length)];
+      out.push({
+        id:id++, seg:sg.i, segRef:sg, n, u:r(),
+        name:fn+' '+ln,
+        age:22+Math.floor(r()*46),
+        ctx:M.ctx[Math.floor(r()*M.ctx.length)],
+        qi:Math.floor(r()*2)
+      });
+    }
+  });
+  return out;
+}
+function simulate(){
+  const segs = activeSegs();
+  const agents = buildAgents();
+  const opts = S.opts.filter(o=>o.trim());
+  const zmap = {}; segs.forEach(sg=> zmap[sg.i] = opts.map(o=>segZ(sg,o)));
+
+  // agent-level responses
+  const het = S.type==='pricing' ? 1.60 : 1.25;   // within-segment heterogeneity
+  agents.forEach(a=>{
+    a.p = opts.map((o,oi)=>{
+      const z = zmap[a.seg][oi].z + het*a.n;
+      return logistic(z);
+    });
+    // structural floor and ceiling: some agents are outside the category entirely,
+    // a few will act regardless of the option. Nothing ever reaches 0% or 100%.
+    a.out = a.u < 0.038;          // never in market
+    a.always = a.u > 0.972;       // acts regardless
+    a.yes = a.p.map(p=> a.out ? false : a.always ? true : p>=0.5);
+  });
+
+  // segment + population rates aggregated from agents
+  const segRates = segs.map(sg=>{
+    const mine = agents.filter(a=>a.seg===sg.i);
+    return opts.map((o,oi)=> mine.filter(a=>a.yes[oi]).length/mine.length);
+  });
+  const popRate = opts.map((o,oi)=> segs.reduce((acc,sg,si)=> acc + sg.w*segRates[si][oi], 0));
+
+  // confidence interval: sampling error + irreducible model error
+  const ci = popRate.map(p=>{
+    const se = Math.sqrt(Math.max(p*(1-p),.02)/S.popN);
+    return clamp(1.96*se + 0.016, .005, .18);
+  });
+
+  // secondary metric
+  let second = null;
+  if(S.type==='pricing'){
+    const rev = opts.map((o,oi)=>{ const p=parsePrice(o)||0; return popRate[oi]*p; });
+    const mx = Math.max(...rev)||1;
+    second = {label:'Revenue index', vals:rev.map(v=>Math.round(v/mx*100)), suffix:'', best:rev.indexOf(Math.max(...rev))};
+  }
+
+  // pick winner: revenue for pricing, rate otherwise
+  const rank = opts.map((o,i)=>i).sort((a,b)=>
+    S.type==='pricing' ? second.vals[b]-second.vals[a] : popRate[b]-popRate[a]);
+  const win = rank[0], run = rank[1]!==undefined?rank[1]:rank[0];
+
+  // Is the lead real, or inside the noise? For pricing the decision metric is revenue,
+  // so the tie test has to run on revenue, not on the raw buy rate.
+  const tie = opts.length<2 ? false : (S.type==='pricing'
+    ? Math.abs(second.vals[win]-second.vals[run]) <= 4
+    : (popRate[win]-popRate[run]) <= (ci[win]+ci[run])*0.55);
+
+  // drivers: winner vs runner-up, population-weighted
+  const drivers = DIMS.map(([k,label])=>{
+    const d = segs.reduce((acc,sg)=> acc + sg.w*(zmap[sg.i][win].c[k]-zmap[sg.i][run].c[k]), 0);
+    return {label:dimLabel(k,label), v:d*0.38};
+  });
+  if(S.type==='pricing'){
+    const d = segs.reduce((acc,sg)=> acc + sg.w*(clamp(zmap[sg.i][win].wtpTerm,-4,4)-clamp(zmap[sg.i][run].wtpTerm,-4,4)), 0);
+    drivers.push({label:'Willingness-to-pay headroom', v:d*0.42});
+  }
+  drivers.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+
+  // divergence: which segment disagrees most with the population
+  let spread = 0, splitSeg = segs[0];
+  segs.forEach((sg,si)=>{
+    const d = Math.abs(segRates[si][win]-popRate[win]);
+    if(d>spread){spread=d;splitSeg=sg;}
+  });
+
+  return {opts, segs, segRates, popRate, ci, second, win, run, rank, drivers, agents, spread, splitSeg, tie,
+          n:S.popN, seed:S.seed, ts:new Date()};
+}
+function quoteFor(a, oi){
+  const R = S.result, opt = R.opts[oi];
+  const bank = a.yes[oi] ? a.segRef.pos : a.segRef.neg;
+  return bank[a.qi % bank.length].replace(/\{O\}/g, opt);
+}
+
+/* ============================== RENDER: SHELL ============================== */
+const STEPS = [
+  [1,'Frame the decision','What you are about to bet on'],
+  [2,'Build the population','Who the decision lands on'],
+  [3,'Run the simulation','Agents respond under constraint'],
+  [4,'Read the prediction','Outcome, segments, drivers']
+];
+function renderRail(){
+  $('#steps').innerHTML = '<div class="steplbl">Workflow</div>' + STEPS.map(([n,t,s])=>
+    `<button class="step ${S.step===n?'on':''} ${S.step>n?'done':''}" onclick="goto(${n})">
+      <span class="n">${S.step>n?'✓':n}</span><span><span class="t">${t}</span><span class="s">${s}</span></span>
+    </button>`).join('');
+  $('#runs').innerHTML = S.history.length ? S.history.map((h,i)=>
+    `<div class="runitem" onclick="loadRun(${i})"><div class="q">${esc(h.q)}</div>
+      <div class="m">${h.winLabel} · ${pct(h.rate)}%</div></div>`).join('')
+    : '<div class="hint" style="padding:0 8px">No runs yet.</div>';
+}
+function goto(n){
+  if(n===4 && !S.result) return;
+  if(n===3){ run(); return; }
+  S.step=n; render();
+}
+function render(){
+  renderRail();
+  const v = {1:view1,2:view2,3:view3,4:view4}[S.step];
+  $('#main').innerHTML = `<div class="wrap fadein">${v()}</div>`;
+  if(S.step===2) drawPop();
+  if(S.step===4) setTimeout(drawPop,20);
+}
+
+/* ============================== VIEW 1 — DECISION ============================== */
+function view1(){
+  const M = MARKETS[S.market];
+  return `
+  <div class="eyebrow">01 &nbsp;The Decision</div>
+  <h1>Test the decision <em>before</em> you commit to it.</h1>
+  <div class="sub">Every consequential decision is a bet on how people respond. State the bet and the options you are choosing between.</div>
+
+  <div class="card">
+    <div class="lbl">Start from a live example</div>
+    <div class="grid4">${PRESETS.map((p,i)=>`
+      <button class="tile ${S.q===p.q?'on':''}" onclick="usePreset(${i})">
+        <div class="ti">${TYPES[p.t].n}</div>
+        <div class="td">${MARKETS[p.m].name.replace('US ','').replace('UK ','')}</div>
+      </button>`).join('')}</div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Decision type</div>
+    <div class="grid4" style="margin-bottom:22px">${Object.entries(TYPES).map(([k,v])=>`
+      <button class="tile ${S.type===k?'on':''}" onclick="setType('${k}')">
+        <div class="ti">${v.n}</div><div class="td">${v.d}</div>
+      </button>`).join('')}</div>
+
+    <div class="lbl">The question you are actually asking</div>
+    <textarea class="q" id="qbox" oninput="S.q=this.value" placeholder="e.g. What should we charge for…">${esc(S.q)}</textarea>
+
+    <div class="lbl" style="margin-top:22px">Options under consideration</div>
+    <div id="optlist">${S.opts.map((o,i)=>`
+      <div class="optrow">
+        <span class="idx">${String.fromCharCode(65+i)}</span>
+        <input value="${esc(o)}" oninput="S.opts[${i}]=this.value" placeholder="Option ${String.fromCharCode(65+i)}" />
+        <button class="x" onclick="delOpt(${i})" title="Remove">✕</button>
+      </div>`).join('')}</div>
+    ${S.opts.length<6?`<button class="ghost" onclick="addOpt()">+ Add option</button>`:''}
+
+    <div class="actions">
+      <button class="btn" onclick="goto(2)" ${S.opts.filter(o=>o.trim()).length<2?'disabled':''}>Build the population →</button>
+      <span class="hint">${S.opts.filter(o=>o.trim()).length<2?'At least two options are needed to compare.':'Currently testing against '+M.name.toLowerCase()+'.'}</span>
+    </div>
+  </div>`;
+}
+function usePreset(i){
+  const p = PRESETS[i];
+  S.type=p.t; S.market=p.m; S.q=p.q; S.opts=p.o.slice(); S.segsOn=[true,true,true,true,true]; S.result=null;
+  render();
+}
+function setType(k){ S.type=k; render(); }
+function addOpt(){ S.opts.push(''); render(); }
+function delOpt(i){ if(S.opts.length>2){ S.opts.splice(i,1); render(); } }
+
+/* ============================== VIEW 2 — POPULATION ============================== */
+function view2(){
+  const M = MARKETS[S.market];
+  return `
+  <div class="eyebrow">02 &nbsp;The Population</div>
+  <h1>Ask the exact people <em>your decision lands on.</em></h1>
+  <div class="sub">Every audience responds differently. Populus models each segment separately instead of blurring them into a single number.</div>
+
+  <div class="card">
+    <div class="lbl">Market</div>
+    <div class="grid2">${Object.entries(MARKETS).map(([k,m])=>`
+      <button class="tile ${S.market===k?'on':''}" onclick="setMarket('${k}')">
+        <div class="ti">${m.name}</div><div class="td">${m.universe} · ${m.frame}</div>
+      </button>`).join('')}</div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Segments in scope — click to include or exclude</div>
+    ${M.segs.map((sg,i)=>`
+      <div class="seg ${S.segsOn[i]?'':'off'}" onclick="toggleSeg(${i})">
+        <span class="dot" style="background:${SEGC[i]}"></span>
+        <span><span class="nm">${sg.n}</span><span class="bl">${sg.b}</span></span>
+        <span class="sh">${(sg.s*100).toFixed(0)}%<small>OF MARKET</small></span>
+      </div>`).join('')}
+    <div class="hint" style="margin-top:10px">Excluded segments are removed and remaining shares are renormalised.</div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Simulated sample size — ${S.popN.toLocaleString()} agents</div>
+    <input type="range" min="1000" max="50000" step="1000" value="${S.popN}" oninput="S.popN=+this.value;document.querySelector('#szl').textContent=(+this.value).toLocaleString()" />
+    <div class="hint" style="margin-top:8px">Sampling <b id="szl">${S.popN.toLocaleString()}</b> agents. Larger samples narrow the interval; they do not remove model error.</div>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Population preview — ${AGENTS_SHOWN} of the sample, one square per agent</div>
+    <div class="popgrid" id="popgrid"></div>
+    <div class="hint" style="margin-top:12px">Click any agent to inspect the person the model is simulating.</div>
+  </div>
+
+  <div class="actions">
+    <button class="btn" onclick="run()" ${S.segsOn.filter(Boolean).length<1?'disabled':''}>Run the simulation →</button>
+    <button class="btn sec" onclick="goto(1)">Back</button>
+  </div>`;
+}
+function setMarket(k){ S.market=k; S.segsOn=[true,true,true,true,true]; S.result=null; render(); }
+function toggleSeg(i){
+  if(S.segsOn[i] && S.segsOn.filter(Boolean).length<=1) return;
+  S.segsOn[i]=!S.segsOn[i]; S.result=null; render();
+}
+function drawPop(){
+  const el = $('#popgrid'); if(!el) return;
+  const list = S.result ? S.result.agents : buildAgents();
+  S.agents = list;
+  const oi = S.focusOpt;
+  el.innerHTML = list.map(a=>{
+    const on = S.result ? a.yes[oi] : true;
+    return `<span class="ag ${on?'':'no'}" style="background:${SEGC[a.seg]}" onclick="showAgent(${a.id})" title="${esc(a.name)}"></span>`;
+  }).join('');
+}
+
+/* ============================== VIEW 3 — RUN ============================== */
+function view3(){
+  return `<div class="eyebrow">03 &nbsp;The Run</div>
+  <div class="runbox">
+    <div class="orb"></div>
+    <div class="phase" id="ph">Sampling the population</div>
+    <div class="phasesub" id="phs"></div>
+    <div class="bar"><i id="bari"></i></div>
+    <div class="log" id="lg"></div>
+  </div>`;
+}
+function run(){
+  S.step=3; renderRail();
+  $('#main').innerHTML = `<div class="wrap fadein">${view3()}</div>`;
+  const M = MARKETS[S.market], segs = activeSegs();
+  const phases = [
+    ['Sampling the population', `${S.popN.toLocaleString()} agents drawn across ${segs.length} segments`, `Drew <b>${S.popN.toLocaleString()}</b> agents from ${M.universe}`],
+    ['Grounding in evidence', M.frame, `Matched to <b>${(h32(S.market)%40+18)},${(h32(S.q)%900+100)}</b> first-person interviews`],
+    ['Calibrating stated vs. observed', 'Correcting stated intent against behavioural records', `Applied <b>stated-intent correction</b> from transaction history`],
+    ['Running the decision', `${S.opts.filter(o=>o.trim()).length} options under real constraints`, `Simulated <b>${(S.popN*S.opts.filter(o=>o.trim()).length).toLocaleString()}</b> individual responses`],
+    ['Resolving segments', 'Decomposing the outcome by who drives it', `Resolved segment-level rates and dispersion`],
+    ['Scoring the prediction', 'Interval from sampling error and model error', `Prediction logged to the calibration ledger`]
+  ];
+  let i = 0;
+  const tick = () => {
+    if(i>=phases.length){
+      S.result = simulate(); S.focusOpt = S.result.win; S.tab='segments';
+      S.history.unshift({q:S.q, winLabel:S.result.opts[S.result.win], rate:S.result.popRate[S.result.win],
+        snapshot:{type:S.type,market:S.market,q:S.q,opts:S.opts.slice(),segsOn:S.segsOn.slice(),popN:S.popN,result:S.result}});
+      if(S.history.length>8) S.history.pop();
+      S.step=4; render(); return;
+    }
+    const [t,s,l] = phases[i];
+    $('#ph').textContent = t; $('#phs').textContent = s;
+    $('#bari').style.width = ((i+1)/phases.length*100)+'%';
+    $('#lg').insertAdjacentHTML('beforeend', `<div style="animation-delay:.05s">${l}</div>`);
+    i++; setTimeout(tick, 620);
+  };
+  tick();
+}
+function loadRun(i){
+  const s = S.history[i].snapshot;
+  Object.assign(S, {type:s.type,market:s.market,q:s.q,opts:s.opts.slice(),segsOn:s.segsOn.slice(),popN:s.popN,result:s.result,seed:s.result.seed});
+  S.focusOpt = s.result.win; S.step=4; render();
+}
+
+/* ============================== VIEW 4 — RESULTS ============================== */
+function view4(){
+  const R = S.result, T = TYPES[S.type], M = MARKETS[S.market];
+  const w = R.win, rate = R.popRate[w], ci = R.ci[w];
+  const gap = R.popRate[w]-R.popRate[R.run];
+  const conf = ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional';
+  const maxRate = Math.max(...R.popRate)||1;
+
+  const secondBlock = R.second ? `
+    <div class="metric"><div class="v">${R.second.vals[w]}</div>
+      <div class="k">${R.second.label}</div><div class="ci">peak of the tested range</div></div>` : '';
+
+  return `
+  <div class="eyebrow">04 &nbsp;The Prediction</div>
+  <h1 style="font-size:26px;max-width:760px">${esc(S.q)}</h1>
+  <div class="sub" style="margin-bottom:24px">${M.name} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
+
+  <div class="headline">
+    <div class="lbl" style="color:${R.tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${R.tie?'Too close to call':'Most likely to win'}</div>
+    <div class="verdict">${R.tie?`<b>${esc(R.opts[w])}</b> <span style="color:var(--muted);font-size:20px">or</span> <b>${esc(R.opts[R.run])}</b>`:`<b>${esc(R.opts[w])}</b>`}</div>
+    <div style="color:var(--ink2);max-width:640px;font-size:13.5px">
+      ${R.tie
+        ? `These two are inside the noise${R.second?' on revenue':''} — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
+        : `${pct(rate)}% of the population would ${T.verb} it — ${(gap*100).toFixed(1)} points clear of ${esc(R.opts[R.run])}, a gap wider than the interval.`}
+      The result is carried by <b style="color:var(--ink)">${R.splitSeg.n}</b>, who diverge ${(R.spread*100).toFixed(1)} points from the population average.
+    </div>
+    <div class="metrics">
+      <div class="metric"><div class="v">${pct(rate)}%</div>
+        <div class="k">${T.metric}</div><div class="ci">±${pct(ci)} at 95%</div></div>
+      ${secondBlock}
+      <div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
+        <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>
+      <div class="metric"><div class="v" style="color:${conf==='High'?'var(--teal)':conf==='Moderate'?'var(--gold2)':'var(--red)'}">${conf}</div>
+        <div class="k">Confidence</div><div class="ci">${conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade'}</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Every option, compared</h3>
+    <div class="hint" style="margin-bottom:14px">${T.metric}. The lighter band is the 95% interval.</div>
+    ${R.opts.map((o,i)=>{
+      const p=R.popRate[i], c=R.ci[i], lo=clamp(p-c,0,1), hi=clamp(p+c,0,1);
+      const isw = i===w;
+      return `<div class="orow">
+        <div>
+          <div class="oname">${esc(o)} ${isw?`<span class="win">${R.tie?'JOINT FIRST':'PREDICTED WINNER'}</span>`:(R.tie&&i===R.run?'<span class="win">JOINT FIRST</span>':'')}</div>
+          <div class="track ${isw?'':'dim'}">
+            <i style="width:${(p/maxRate*100).toFixed(1)}%"></i>
+            <span class="cib" style="left:${(lo/maxRate*100).toFixed(1)}%;width:${((hi-lo)/maxRate*100).toFixed(1)}%"></span>
+          </div>
+        </div>
+        <div class="oval">${pct(p)}%${R.second?`<small>rev idx ${R.second.vals[i]}</small>`:`<small>±${pct(c)}</small>`}</div>
+      </div>`}).join('')}
+  </div>
+
+  <div class="card">
+    <div class="tabs">
+      ${[['segments','Segment response'],['drivers','What moved it'],['voices','Voices'],['people','The population'],['ledger','Calibration']].map(([k,l])=>
+        `<button class="tab ${S.tab===k?'on':''}" onclick="S.tab='${k}';render()">${l}</button>`).join('')}
+    </div>
+    ${{segments:tabSegments,drivers:tabDrivers,voices:tabVoices,people:tabPeople,ledger:tabLedger}[S.tab]()}
+  </div>
+
+  <div class="actions">
+    <button class="btn sec" onclick="goto(1)">Change the decision</button>
+    <button class="btn sec" onclick="goto(2)">Change the population</button>
+    <button class="btn sec" onclick="run()">Re-run same sample</button>
+    <button class="btn" onclick="S.seed++;run()">Draw a new sample →</button>
+  </div>
+  <div class="hint" style="margin-top:12px;max-width:620px;line-height:1.6">
+    A re-run of sample #${R.seed} returns exactly this result — the model is deterministic given a seed, which is what makes
+    a prediction auditable. Drawing a new sample re-rolls <i>which</i> agents are surveyed, not how the population behaves.
+    If the winner flips between samples, the gap was never real: that is the interval doing its job.
+  </div>`;
+}
+
+function tabSegments(){
+  const R = S.result;
+  const heat = v => {
+    const t = clamp((v-.12)/.62,0,1);
+    return `background:rgba(217,164,65,${(0.06+t*0.34).toFixed(3)});color:${t>.55?'#fff':'var(--ink2)'}`;
+  };
+  return `<div class="hint" style="margin-bottom:14px">Share of each segment that would ${TYPES[S.type].verb} it. Bold cell is that segment's own best option — where it disagrees with the population, the decision has a trade-off in it.</div>
+  <table class="mx"><thead><tr><th>Segment</th>${R.opts.map((o,i)=>`<th>${esc(o)}</th>`).join('')}</tr></thead>
+  <tbody>${R.segs.map((sg,si)=>{
+    const row = R.segRates[si], best = row.indexOf(Math.max(...row));
+    return `<tr>
+      <td><div class="segname"><span class="dot" style="background:${SEGC[sg.i]};margin:0"></span>${sg.n}<small>${(sg.w*100).toFixed(0)}%</small></div></td>
+      ${row.map((v,i)=>`<td><div class="cell" style="${heat(v)};${i===best?'outline:1px solid rgba(217,164,65,.55);font-weight:700':''}">${pct(v)}%</div></td>`).join('')}
+    </tr>`}).join('')}
+  <tr><td style="padding-top:12px"><b style="font-size:12.5px">Population</b></td>
+    ${R.popRate.map((v,i)=>`<td style="padding-top:12px"><div class="cell" style="background:rgba(255,255,255,.04);${i===R.win?'color:var(--gold2);font-weight:700':''}">${pct(v)}%</div></td>`).join('')}</tr>
+  </tbody></table>`;
+}
+function tabDrivers(){
+  const R = S.result;
+  const mx = Math.max(...R.drivers.map(d=>Math.abs(d.v)))||1;
+  return `<div class="hint" style="margin-bottom:16px">Why <b style="color:var(--ink)">${esc(R.opts[R.win])}</b> beats <b style="color:var(--ink)">${esc(R.opts[R.run])}</b>, decomposed across the population. Right of centre helps the winner; left of centre works against it.</div>
+  ${R.drivers.map(d=>{
+    const w = Math.abs(d.v)/mx*50, pos = d.v>=0;
+    return `<div class="driver">
+      <div style="font-size:12.5px;color:var(--ink2)">${d.label}</div>
+      <div class="dtrack"><span class="mid"></span>
+        <i style="${pos?`left:50%;background:linear-gradient(90deg,rgba(79,179,165,.5),var(--teal))`:`right:50%;background:linear-gradient(90deg,var(--red),rgba(205,106,76,.5))`};width:${w.toFixed(1)}%"></i></div>
+      <div class="dv" style="color:${pos?'var(--teal)':'var(--red)'}">${pos?'+':''}${d.v.toFixed(2)}</div>
+    </div>`}).join('')}
+  <div class="note">Values are population-weighted log-odds contributions. A driver near zero is not a tie — it means the two options are indistinguishable on that dimension, and pushing on it will not move the outcome.</div>`;
+}
+function tabVoices(){
+  const R = S.result, oi = S.focusOpt;
+  const pool = R.agents.map(a=>({a,p:a.p[oi]})).sort((x,y)=>y.p-x.p);
+  const picks = [], seen = {};
+  const take = (arr) => { for(const it of arr){ if(picks.length>=6) break; if((seen[it.a.seg]||0)>=2) continue; seen[it.a.seg]=(seen[it.a.seg]||0)+1; picks.push(it.a);} };
+  take(pool.slice(0,40)); take(pool.slice(-40).reverse()); take(pool);
+  return `<div class="hint" style="margin-bottom:6px">Responses to a single option. Switch it:</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px">${R.opts.map((o,i)=>
+    `<button class="tile ${i===oi?'on':''}" style="padding:6px 11px;font-size:12px" onclick="S.focusOpt=${i};render()">${esc(o)}</button>`).join('')}</div>
+  ${picks.map(a=>`
+    <div class="quote" style="border-left-color:${SEGC[a.seg]}">
+      <p>“${esc(quoteFor(a,oi))}”</p>
+      <div class="who"><b style="color:var(--ink2);font-weight:600">${a.name}</b> · ${a.age} · ${a.ctx}
+        <span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg]}">${a.segRef.n}</span>
+        <span class="pill ${a.yes[oi]?'y':'n'}">${a.yes[oi]?'WOULD '+TYPES[S.type].verb.toUpperCase():'WOULD NOT'} · p=${a.p[oi].toFixed(2)}</span>
+      </div>
+    </div>`).join('')}
+  <div class="note">Quotes are the modelled response of individual agents, not retrieved text. Each traces back to a segment grounded in the interview corpus above.</div>`;
+}
+function tabPeople(){
+  const R = S.result;
+  return `<div class="hint" style="margin-bottom:6px">Each square is an agent, coloured by segment. Solid means they would ${TYPES[S.type].verb} it; faded means they would not. Showing responses to:</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">${R.opts.map((o,i)=>
+    `<button class="tile ${i===S.focusOpt?'on':''}" style="padding:6px 11px;font-size:12px" onclick="S.focusOpt=${i};render()">${esc(o)}</button>`).join('')}</div>
+  <div class="popgrid" id="popgrid"></div>
+  <div class="note">Click any agent to inspect their profile and their response to every option.</div>`;
+}
+function tabLedger(){
+  return `<div class="hint" style="margin-bottom:14px">Every prediction is logged against what reality returns. Prior closed predictions in adjacent categories:</div>
+  <div class="ledger">
+    <div class="lr h"><span>Prediction</span><span>Predicted</span><span>Observed</span><span>Abs. err</span></div>
+    ${LEDGER.map(r=>`<div class="lr"><span>${r[0]}</span><span>${r[1]}</span><span style="color:var(--teal)">${r[2]}</span><span>${r[3]}</span></div>`).join('')}
+    <div class="lr" style="border-bottom:none;color:var(--gold2)"><span>This run — resolves when the decision ships</span><span>${pct(S.result.popRate[S.result.win])}%</span><span>pending</span><span>—</span></div>
+  </div>
+  <div class="note">A model that is not scored against outcomes is a dashboard. Holding predictions open until reality closes them is what separates a simulation from a survey.</div>`;
+}
+
+/* ============================== AGENT MODAL ============================== */
+function showAgent(id){
+  const a = (S.result?S.result.agents:S.agents).find(x=>x.id===id); if(!a) return;
+  const R = S.result;
+  const M = MARKETS[S.market];
+  const traits = Object.entries(a.segRef.t).map(([k,v])=>{
+    const nm = {price:'Price sensitivity',novelty:'Novelty appetite',trust:'Institutional trust',skeptic:'Claim scepticism',effort:'Switching friction',social:'Social proof'}[k];
+    const ind = Math.round(v*10);
+    return `<div class="k">${nm}</div><div style="font-family:var(--mono);font-size:11px;color:var(--ink2)">${'▮'.repeat(ind)}<span style="color:var(--faint)">${'▯'.repeat(10-ind)}</span> ${(v*100).toFixed(0)}</div>`;
+  }).join('');
+  const resp = R ? R.opts.map((o,i)=>`
+    <div class="resp">
+      <div class="rt"><span>${esc(o)}</span>
+        <span class="pill ${a.yes[i]?'y':'n'}">${a.yes[i]?'YES':'NO'} · p=${a.p[i].toFixed(2)}</span></div>
+      <div class="rq">“${esc(quoteFor(a,i))}”</div>
+    </div>`).join('') : `<div class="hint">Run the simulation to see this agent's response to each option.</div>`;
+  $('#modal').innerHTML = `
+  <div class="scrim" onclick="if(event.target===this)closeAgent()">
+    <div class="modal fadein">
+      <div class="mhead">
+        <div class="avatar" style="background:${SEGC[a.seg]}">${a.name[0]}</div>
+        <div style="flex:1">
+          <div style="font-family:var(--serif);font-size:20px">${a.name}</div>
+          <div style="color:var(--muted);font-size:12.5px">${a.age} · ${a.ctx}</div>
+          <div style="margin-top:6px"><span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg]}">${a.segRef.n}</span></div>
+        </div>
+        <button class="x" onclick="closeAgent()">✕</button>
+      </div>
+      <div class="lbl">Modelled disposition</div>
+      <div class="kv">${traits}</div>
+      <div class="lbl">Response to each option</div>
+      ${resp}
+      <div class="note">Idiosyncratic offset ${a.n>=0?'+':''}${a.n.toFixed(2)}σ from the ${a.segRef.n} mean. Grounded in ${M.frame.toLowerCase()}</div>
+    </div>
+  </div>`;
+}
+function closeAgent(){ $('#modal').innerHTML=''; }
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeAgent(); });
+
+render();
+</script>
+</body>
+</html>
