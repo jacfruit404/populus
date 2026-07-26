@@ -115,9 +115,21 @@ repairable and rejects what is not:
 |---|---|
 | Traits given on a 0–100 scale → rescaled | Fewer than 2 segments |
 | Missing traits → defaulted to 0.5 | Response that isn't an object |
-| Quotes missing the `{O}` token → token appended | Segments that are near-identical across all six traits |
+| Quotes missing the `{O}` token → token appended | Segments near-identical across all six traits |
+| `{O}` leaking into segment names or descriptions → stripped | |
 | Shares that don't sum to 1 → renormalised | |
 | Short name pools and missing context → padded | |
+
+Observed rates on qwen2.5:14b: a five-segment population typically needs
+around ten quote repairs, because the model reliably drops the `{O}` token from
+negative quotes while keeping it in positive ones.
+
+**Cosmetic splits are flagged.** Ask a model to "split segment X into A and B"
+and it will often duplicate the segment and change only the label — same traits,
+same willingness to pay, same quotes. Two segments that behave identically are
+one segment wearing two names, and the segment table would imply a distinction
+that isn't there. Any pair within 3% on every trait and on WTP gets reported in
+the panel as *the split is cosmetic*.
 
 That last rejection is the important one. A model under-specified or asked for a
 narrow audience will sometimes emit five segments with nearly identical trait
@@ -145,6 +157,7 @@ place you need to touch to add a market.
 - The calibration ledger shows illustrative prior predictions. Nothing is wired to an outcome feed yet.
 - Everything is in-memory. Reloading the page clears run history and any generated populations.
 - Generated populations are not persisted or exportable yet. That is the obvious next commit.
+- The model ignores the currency field about half the time — ask for a UK population and it still returns `"cur": "$"`. Cosmetic, affects labels only, not the math.
 
 ## Open questions
 

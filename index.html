@@ -660,8 +660,14 @@ function validateMarket(o){
       if(!a.length){ fix.push(`seg ${i+1}: no ${kind} quotes`); a=[kind==='pos'?'{O} works for me.':'{O} is not for me.']; }
       return a.slice(0,4);
     };
-    m.segs.push({ n:String(sg.n||`Segment ${i+1}`).slice(0,42), s:Math.max(Number(sg.s)||0, 0.01),
-      b:String(sg.b||'No description given.').slice(0,150), t, wtp, sd,
+    // {O} belongs only in quotes; models leak it into names and descriptions
+    let nm = String(sg.n||`Segment ${i+1}`).slice(0,42);
+    let bl = String(sg.b||'No description given.').slice(0,150);
+    if(nm.includes('{O}')||bl.includes('{O}')){
+      fix.push(`seg ${i+1}: stripped {O} from name/description`);
+      nm = nm.replace(/\{O\}/g,'this').trim(); bl = bl.replace(/\{O\}/g,'it').trim();
+    }
+    m.segs.push({ n:nm, s:Math.max(Number(sg.s)||0, 0.01), b:bl, t, wtp, sd,
       pos:clean(sg.pos,'pos'), neg:clean(sg.neg,'neg') });
   });
 
@@ -675,7 +681,19 @@ function validateMarket(o){
   },0)/TRAIT_KEYS.length;
   if(spread<0.12) errs.push(`segments are nearly identical (mean trait spread ${spread.toFixed(2)}) — the model collapsed them`);
 
-  return {ok:errs.length===0, market:m, errs, fix, spread};
+  // Asked to "split" a segment, a model will often duplicate it and change only
+  // the label. Two segments that behave identically are one segment wearing two
+  // names, and the segment table would imply a distinction that is not there.
+  const dupes=[];
+  for(let i=0;i<m.segs.length;i++) for(let j=i+1;j<m.segs.length;j++){
+    const a=m.segs[i], b=m.segs[j];
+    const d = TRAIT_KEYS.reduce((acc,k)=>acc+Math.abs(a.t[k]-b.t[k]),0)/TRAIT_KEYS.length;
+    const wd = Math.abs(a.wtp-b.wtp)/Math.max(a.wtp,b.wtp,1e-9);
+    if(d<0.03 && wd<0.03) dupes.push([a.n,b.n]);
+  }
+  dupes.forEach(([a,b])=> fix.push(`"${a}" and "${b}" are behaviourally identical — the split is cosmetic`));
+
+  return {ok:errs.length===0, market:m, errs, fix, spread, dupes};
 }
 
 async function llmGenerate(){
