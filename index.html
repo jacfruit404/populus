@@ -527,6 +527,14 @@ Rules:
   would appear. Do not put {O} in names or descriptions.
 - Output raw JSON only. No markdown fences, no commentary.`;
 
+// True when the page is served from somewhere other than the viewer's own
+// machine (i.e. a shared link). The model endpoint always points at the
+// viewer's localhost, so on a hosted page it can only reach a model the
+// viewer is running themselves — worth saying plainly rather than letting
+// the panel just read "Not reachable".
+const isHosted = () => location.protocol!=='file:'
+  && !/^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(location.hostname);
+
 function llmLog(msg, kind){
   const tag = kind==='err' ? 'i' : kind==='warn' ? 'u' : 'b';
   S.llm.log.push(`<${tag}>${msg}</${tag}>`);
@@ -551,6 +559,7 @@ async function llmProbe(silent){
     S.llm.status='down';
     llmLog('Cannot reach '+base+' — '+e.message,'err');
     if(location.protocol==='file:') llmLog('Page is running from file:// — the server will reject that origin. Serve it over http://localhost instead (see serve.sh).','warn');
+    else if(isHosted()) llmLog('This is a shared link — it can only reach a model running on your own machine. Start Ollama locally, or run the project with serve.sh for full model support.','warn');
   }
   renderLLM();
 }
@@ -790,6 +799,8 @@ function llmPanel(){
       ${L.status==='ok'?`<span style="color:var(--faint)">· ${esc(L.model)}</span>`:''}
       <button class="btn sec" style="padding:4px 10px;font-size:11px;margin-left:auto" onclick="llmProbe()">Reconnect</button>
     </div>
+    ${isHosted()?`<div style="margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:6px;color:var(--muted);font-size:12px;line-height:1.55">
+      You're on a shared link, so this panel looks for a model on <b>your own machine</b>, not the author's. Start Ollama locally and it connects; a few browsers block a hosted HTTPS page from reaching local <code>http://</code>, so for reliable model support run the project locally (<code>serve.sh</code>). Everything else — the built-in markets, the simulation, the ledger — works here without it.</div>`:''}
     <div class="fld"><label>Endpoint</label>
       <input value="${esc(L.endpoint)}" oninput="S.llm.endpoint=this.value" placeholder="http://127.0.0.1:11434" /></div>
     <div class="fld"><label>Model</label>
