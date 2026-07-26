@@ -214,6 +214,11 @@ table.mx td:first-child{font-size:12.5px}
 .llmlog b{color:var(--teal);font-weight:400}
 .llmlog i{color:var(--red);font-style:normal}
 .llmlog u{color:var(--gold2);text-decoration:none}
+.mismatch{border:1px solid rgba(205,106,76,.45);background:rgba(205,106,76,.09);border-radius:11px;
+  padding:15px 17px;margin-bottom:16px;display:flex;gap:12px;align-items:flex-start}
+.mismatch .ic{color:var(--red);font-size:15px;line-height:1.2;flex:0 0 auto}
+.mismatch .tx{font-size:12.5px;line-height:1.55;color:var(--ink2)}
+.mismatch b{color:var(--red);display:block;margin-bottom:3px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;font-family:var(--mono);font-weight:400}
 .fadein{animation:fi .45s ease both}
 @keyframes fi{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 @media(max-width:900px){.app{grid-template-columns:1fr}.rail{display:none}.wrap{padding:28px 20px 80px}.grid4{grid-template-columns:1fr 1fr}}
@@ -384,6 +389,26 @@ const DIMLBL = {
  policy:{price:'Household cost impact',novelty:'Appetite for change',trust:'Trust it gets delivered',effort:'Disruption to routine',social:'Perceived fairness'}
 };
 const dimLabel = (k,fallback) => (DIMLBL[S.type]||{})[k] || fallback;
+/* The decision and the population are chosen in separate steps, so nothing stops
+   you running a snack audience against a decision about medical software. The
+   traits and willingness-to-pay figures would be meaningless, and the verbatims
+   read as nonsense. Cheap content-word overlap catches the obvious cases. */
+const STOPW = new Set(('the and for our your what which should would could when where '+
+ 'that this with from they them their have has been will can not are was were '+
+ 'much many more most less into onto over under about than then also just very '+
+ 'new first next best good great make made take does did you it is be to of in on at a an or if we my'
+ ).split(/\s+/));
+const contentWords = s => (String(s||'').toLowerCase().match(/[a-z]{4,}/g)||[]).filter(w=>!STOPW.has(w));
+function coherenceWarning(){
+  const m = MARKETS[S.market];
+  if(!m || !m.brief) return null;                 // only for model-generated populations
+  const pop = new Set(contentWords(m.name+' '+m.brief+' '+m.frame));
+  const dec = contentWords(S.q+' '+S.opts.join(' '));
+  if(!dec.length || !pop.size) return null;
+  if(dec.some(w=>pop.has(w))) return null;
+  return `This population was built for “${m.brief.slice(0,110)}${m.brief.length>110?'…':''}” — nothing in it relates to the decision you are testing. `+
+         `Its traits, willingness-to-pay figures and verbatims were written for a different question, so any result will be meaningless.`;
+}
 function parseAgeRange(s){
   const m = String(s||'').match(/(\d{2})\s*(?:-|–|—|to)\s*(\d{2})/);
   if(m) return [+m[1], +m[2]];
@@ -731,11 +756,22 @@ function validateMarket(o){
     let wtp=Number(sg.wtp), sd=Number(sg.sd);
     if(!isFinite(wtp)||wtp<=0){ wtp=10; fix.push(`seg ${i+1}: wtp defaulted`); }
     if(!isFinite(sd)||sd<=0){ sd=Math.max(1,wtp*0.3); fix.push(`seg ${i+1}: sd defaulted`); }
+    /* A quote that never mentioned the option is not a response to the option.
+       Welding "— {O}." onto the end of one produces gibberish, so prefer to drop
+       it, and only reshape a quote into a reply when nothing else survives. */
     const clean = (arr,kind)=>{
-      let a = Array.isArray(arr)? arr.filter(x=>typeof x==='string'&&x.trim().length>8) : [];
-      a = a.map(x=>{ if(!x.includes('{O}')){ fix.push(`seg ${i+1}: ${kind} quote missing {O}`); return x.trim().replace(/[.?!]?$/,'')+' — {O}.'; } return x.trim(); });
-      if(!a.length){ fix.push(`seg ${i+1}: no ${kind} quotes`); a=[kind==='pos'?'{O} works for me.':'{O} is not for me.']; }
-      return a.slice(0,4);
+      const raw = Array.isArray(arr)? arr.filter(x=>typeof x==='string'&&x.trim().length>8).map(x=>x.trim()) : [];
+      const kept = raw.filter(x=>x.includes('{O}'));
+      if(kept.length){
+        if(kept.length<raw.length) fix.push(`seg ${i+1}: dropped ${raw.length-kept.length} ${kind} quote(s) that never referenced the option`);
+        return kept.slice(0,4);
+      }
+      if(raw.length){
+        fix.push(`seg ${i+1}: no ${kind} quote referenced the option, reshaped as a reply`);
+        return ['{O}? '+raw[0]];
+      }
+      fix.push(`seg ${i+1}: no ${kind} quotes`);
+      return [kind==='pos'?'{O}? Yes, that works for me.':'{O}? No, not for me.'];
     };
     // {O} belongs only in quotes; models leak it into names and descriptions
     let nm = String(sg.n||`Segment ${i+1}`).slice(0,42);
@@ -750,8 +786,12 @@ function validateMarket(o){
     urb = Number(urb);
     if(isFinite(urb)){ if(urb>1&&urb<=100) urb=urb/100; urb=clamp(urb,0,1); } else urb=undefined;
 
-    m.segs.push({ n:nm, s:Math.max(Number(sg.s)||0, 0.01), b:bl, t, wtp, sd,
-      geo: String(sg.geo||sg.country||sg.market||'').slice(0,28),
+    let geo = String(sg.geo||sg.country||sg.market||'').slice(0,40);
+    if(/[,;/]/.test(geo)){
+      geo = geo.split(/[,;/]+/).map(x=>x.trim()).filter(Boolean).join(' / ');
+      fix.push(`seg ${i+1}: covers several markets at once (${geo}) — the per-country breakdown will be coarse`);
+    }
+    m.segs.push({ n:nm, s:Math.max(Number(sg.s)||0, 0.01), b:bl, t, wtp, sd, geo,
       age: String(sg.age||sg.age_range||'').slice(0,20),
       income: String(sg.income||sg.income_level||'').slice(0,24),
       urban: urb,
@@ -844,6 +884,7 @@ async function llmGenerate(){
       }catch(e){ llmLog('Second pass failed ('+e.message+'); keeping the first result.','warn'); }
     }
     const key = 'custom_'+(Object.keys(MARKETS).filter(k=>k.startsWith('custom_')).length+1);
+    v.market.brief = editing ? ((cur.brief?cur.brief+' ':'')+p) : p;   // remembered so a later mismatch can be caught
     MARKETS[key] = v.market;
     if(v.market.traits.length) llmLog(`Extra dimensions: ${v.market.traits.map(t=>t.label+(t.invert?' (resists)':'')).join(', ')}`);
     const geos = [...new Set(v.market.segs.map(s=>s.geo).filter(Boolean))];
@@ -945,6 +986,12 @@ function view2(){
   <div class="eyebrow">02 &nbsp;The Population</div>
   <h1>Ask the exact people <em>your decision lands on.</em></h1>
   <div class="sub">Every audience responds differently. Populus models each segment separately instead of blurring them into a single number.</div>
+  <div class="card" style="padding:14px 18px;margin-bottom:16px;background:var(--bg2)">
+    <div class="lbl" style="margin-bottom:6px">Testing this decision</div>
+    <div style="font-family:var(--serif);font-size:15px;color:var(--ink2)">${esc(S.q)}</div>
+    <div class="hint" style="margin-top:6px">${S.opts.filter(o=>o.trim()).map(esc).join(' &nbsp;·&nbsp; ')}</div>
+  </div>
+  ${mismatchBanner()}
 
   <div class="card">
     <div class="lbl">Market</div>
@@ -995,6 +1042,13 @@ function view2(){
     <button class="btn sec" onclick="goto(1)">Back</button>
   </div>`;
 }
+function mismatchBanner(){
+  const w = coherenceWarning();
+  return w ? `<div class="mismatch"><span class="ic">▲</span><span class="tx">
+    <b>Population does not match the decision</b>${esc(w)}
+    <span style="display:block;margin-top:7px;color:var(--faint)">Either go back and restate the decision, or generate a population for it below.</span>
+  </span></div>` : '';
+}
 function llmPanel(){
   const L = S.llm;
   const st = {ok:['led ok','Connected'], down:['led bad','Not reachable'], nomodels:['led bad','No models installed'],
@@ -1039,11 +1093,12 @@ function toggleSeg(i){
 }
 function drawPop(){
   const el = $('#popgrid'); if(!el) return;
-  const list = S.result ? S.result.agents : buildAgents();
+  const ready = !!(S.result && S.result.agents && S.result.agents.length);
+  const list = ready ? S.result.agents : buildAgents();
   S.agents = list;
-  const oi = S.focusOpt;
+  const oi = Math.min(S.focusOpt, ready ? S.result.opts.length-1 : 0);
   el.innerHTML = list.map(a=>{
-    const on = S.result ? a.yes[oi] : true;
+    const on = ready && a.yes ? a.yes[oi] : true;
     return `<span class="ag ${on?'':'no'}" style="background:${SEGC[a.seg%SEGC.length]}" onclick="showAgent(${a.id})" title="${esc(a.name)}"></span>`;
   }).join('');
 }
@@ -1109,7 +1164,8 @@ function view4(){
   return `
   <div class="eyebrow">04 &nbsp;The Prediction</div>
   <h1 style="font-size:26px;max-width:760px">${esc(S.q)}</h1>
-  <div class="sub" style="margin-bottom:24px">${M.name} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
+  <div class="sub" style="margin-bottom:24px">${esc(M.name)} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
+  ${mismatchBanner()}
 
   <div class="headline">
     <div class="lbl" style="color:${R.tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${R.tie?'Too close to call':'Most likely to win'}</div>
