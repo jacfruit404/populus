@@ -1,0 +1,9 @@
+# Streamlit-only config. Matches the app's dark ground so the surface behind
+# the embedded iframe doesn't flash a different colour. The app itself is
+# themed in index.html; this only styles Streamlit's own frame.
+[theme]
+base = "dark"
+backgroundColor = "#15110e"
+
+[server]
+headless = true
