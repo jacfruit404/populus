@@ -146,6 +146,60 @@ function run(){
   ok(nonPricing.second === null, 'only pricing gets a revenue index');
   ok(typeof nonPricing.tie === 'boolean', 'non-pricing decisions still get a tie verdict');
 
+  /* ------------------------------------------------- billing units */
+  // "$9/month" is not $9. Reading only the number ranked a $108/year plan as
+  // the cheapest option on the table; the period has to be read too.
+  G('Billing unit detection');
+  ok(E.parseBillingUnit('$9/month') === 'monthly', '/month is monthly');
+  ok(E.parseBillingUnit('$9/mo') === 'monthly', '/mo is monthly');
+  ok(E.parseBillingUnit('$9 per month') === 'monthly', 'per month is monthly');
+  ok(E.parseBillingUnit('$99 monthly') === 'monthly', 'the word monthly is monthly');
+  ok(E.parseBillingUnit('$19/year') === 'yearly', '/year is yearly');
+  ok(E.parseBillingUnit('$19/yr') === 'yearly', '/yr is yearly');
+  ok(E.parseBillingUnit('$19 per year') === 'yearly', 'per year is yearly');
+  ok(E.parseBillingUnit('$199 annual') === 'yearly', 'annual is yearly');
+  ok(E.parseBillingUnit('$99 Flat') === 'onetime', 'flat is one-time');
+  ok(E.parseBillingUnit('$99 one-time') === 'onetime', 'one-time is one-time');
+  ok(E.parseBillingUnit('$299 lifetime') === 'onetime', 'lifetime is one-time');
+  ok(E.parseBillingUnit('$6.99') === 'unspecified', 'a bare number states no period');
+
+  G('Price normalisation');
+  ok(E.parsePrice('$9/month') === 9, 'parsePrice still reads only the number');
+  ok(E.normalizedPrice('$9/month') === 108, 'a monthly price is annualised to a common period');
+  ok(E.normalizedPrice('$19/year') === 19, 'a yearly price is already on that period');
+  ok(E.normalizedPrice('$99 Flat') === 99, 'a one-time price is taken at face value');
+  ok(E.normalizedPrice('$6.99') === 6.99, 'a bare number is unchanged');
+  ok(E.normalizedPrice('free') === null, 'a non-numeric price stays null');
+
+  // The demand-side price term must see the annualised figure, or the whole
+  // point of the fix is lost. wtpTerm is latent-independent, so it isolates it.
+  const bSeg = E.activeSegs(market(), [true,true])[0];
+  const bDims = E.dims(market()), bCfg = cfg();
+  const zMo = E.segZ(bSeg, '$9/month', bCfg, bDims);
+  const zYr = E.segZ(bSeg, '$108', bCfg, bDims);
+  const zBare = E.segZ(bSeg, '$9', bCfg, bDims);
+  ok(near(zMo.wtpTerm, zYr.wtpTerm), 'demand sees $9/month as 108, exactly like $108');
+  ok(!near(zMo.wtpTerm, zBare.wtpTerm), 'and not as the bare number 9');
+
+  G('Mixed vs uniform billing');
+  const uni = E.simulate(cfg({opts:['$19/year','$39/year','$99/year']}));
+  ok(!uni.incomparable && uni.second, 'a uniform-unit run ranks as normal, with a revenue index');
+  const recur = E.simulate(cfg({opts:['$120/year','$9/month']}));
+  ok(!recur.incomparable, 'monthly and yearly share a basis and stay comparable');
+  // Revenue index must be built on the normalised price: $9/month as 108.
+  const revA = recur.popRate[0]*120, revB = recur.popRate[1]*108, mx = Math.max(revA, revB);
+  ok(recur.second.vals[0] === Math.round(revA/mx*100) && recur.second.vals[1] === Math.round(revB/mx*100),
+     'the revenue index uses the annualised price, not the raw number');
+
+  const mixed = E.simulate(cfg({opts:['$19/year','$9/month','$39/year','$99 Flat']}));
+  ok(mixed.incomparable && mixed.incomparable.reason === 'mixed-billing',
+     'recurring mixed with one-time is refused, not ranked');
+  ok(mixed.second === null, 'no revenue index is produced for incomparable options');
+  ok(mixed.tie === false, 'a refusal to rank is not reported as a tie');
+  const bases = mixed.incomparable.groups.map(g => g.basis);
+  ok(bases.indexOf('recurring') >= 0 && bases.indexOf('onetime') >= 0,
+     'the refusal names the incompatible bases so the UI can show which is which');
+
   G('Drivers');
   ok(nonPricing.drivers.length === 6, 'six dimensions produce six drivers');
   ok(E.simulate(cfg()).drivers.length === 7, 'pricing adds the willingness-to-pay driver');
