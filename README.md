@@ -168,11 +168,46 @@ vectors, which looks like a population but cannot produce a meaningful segment
 split. Mean trait spread below 0.12 is treated as a collapse and thrown out, with
 the reason logged in the panel.
 
+## The calibration ledger
+
+A model that is not scored against outcomes is a dashboard. The ledger is where
+predictions are committed and held open until reality closes them.
+
+**Commit** a prediction when you actually ship the decision — not on every run.
+The record freezes the question, the winning option, the predicted rate, the
+interval, the seed, the sample size and the population. None of it can be edited
+afterwards. Only the outcome can be added.
+
+**Close** it when you know what happened: enter the observed figure and a note on
+how it was measured. Three statistics then accumulate:
+
+| Statistic | What it tells you |
+|---|---|
+| Mean absolute error | how wrong the model is, on average |
+| Bias | whether it systematically over- or under-predicts |
+| **Interval coverage** | whether the stated intervals mean anything |
+
+Coverage is the one that matters. If the 95% intervals are honest, roughly 95%
+of outcomes should land inside them. Coverage far below that means the model is
+overconfident and the intervals are decoration. The tab says so when n is small,
+because five closed predictions is not a track record.
+
+Predictions are written to `ledger.json` next to the app — plain text,
+inspectable, atomically written, and gitignored so your decisions stay private.
+If the page is served by something that cannot accept the write, it falls back to
+browser storage and tells you it has done so.
+
+**Earlier versions of this tab showed five fabricated rows.** They are gone. An
+invented track record is worse than an empty one, and the empty state now says
+plainly that the model has no evidence behind it yet.
+
 ## Layout
 
 ```
 index.html    the entire prototype — markup, styles, engine, all of it
-serve.sh      local http server; also checks whether Ollama is up
+serve.py      static server + the ledger read/write API
+serve.sh      wrapper: checks Ollama, then starts serve.py
+ledger.json   your committed predictions (created on first commit, gitignored)
 README.md     this file
 ```
 
@@ -185,7 +220,7 @@ place you need to touch to add a market.
 
 - The four built-in markets are hand-authored, not fit to data. The machinery is real; the parameters are illustrative. Model-generated populations are plausible fiction until grounded in something.
 - Verbatims are template-driven per segment, not generated. They demonstrate the surface, not the linguistic range.
-- The calibration ledger shows illustrative prior predictions. Nothing is wired to an outcome feed yet.
+- The calibration ledger is real but manual — outcomes are typed in by hand. Nothing is wired to a live outcome feed, and nothing stops you entering a number that flatters the model.
 - Everything is in-memory. Reloading the page clears run history and any generated populations.
 - Generated populations are not persisted or exportable yet. That is the obvious next commit.
 - The model ignores the currency field about half the time — ask for a UK population and it still returns `"cur": "$"`. Cosmetic, affects labels only, not the math.
