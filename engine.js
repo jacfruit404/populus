@@ -76,6 +76,45 @@ function parsePrice(str){
   const m = String(str).replace(/,/g, '').match(/-?\d+(\.\d+)?/);
   return m ? parseFloat(m[0]) : null;
 }
+
+/* A pricing option can carry a billing period, and the number alone is not the
+   price: "$9/month" is $108/year, not $9. Reading only the number ranked a
+   $108/year plan as the cheapest thing on the table. parsePrice still reads the
+   number; parseBillingUnit reads the period so the number can be put on a
+   common footing — and so options on genuinely different footings can be
+   refused rather than silently compared. */
+function parseBillingUnit(str){
+  const s = String(str).toLowerCase();
+  // one-time first, so "$99 flat" is one-time rather than matching nothing
+  if (/\b(one[\s-]?time|one[\s-]?off|once|flat|lifetime|outright)\b/.test(s)) return 'onetime';
+  if (/\/\s*mo(nth)?\b|\bper\s+month\b|\ba\s+month\b|\bmonthly\b/.test(s))     return 'monthly';
+  if (/\/\s*(yr|year)\b|\bper\s+(year|annum)\b|\ba\s+year\b|\bannual(ly)?\b|\byearly\b/.test(s)) return 'yearly';
+  return 'unspecified';
+}
+// Common comparison period is one year: a monthly price is annualised (×12);
+// yearly, one-time and unspecified prices are already on that footing.
+const PERIOD_MULT = {monthly: 12, yearly: 1, onetime: 1, unspecified: 1};
+function normalizedPrice(str){
+  const p = parsePrice(str);
+  return p === null ? null : p * PERIOD_MULT[parseBillingUnit(str)];
+}
+/* Monthly and yearly share a basis (recurring) — annualising makes them
+   directly comparable. One-time is a different basis: a subscription against a
+   one-off needs a time horizon and a retention assumption to compare, which the
+   engine will not invent. A bare number is its own basis because it could be
+   any period. */
+function billingBasis(unit){ return (unit === 'monthly' || unit === 'yearly') ? 'recurring' : unit; }
+function billingReport(opts){
+  const list = (opts || []).map(String).filter(o => o.trim());
+  const units = list.map(parseBillingUnit);
+  const order = [], byBasis = {};
+  list.forEach((o, i) => {
+    const b = billingBasis(units[i]);
+    if (!byBasis[b]){ byBasis[b] = []; order.push(b); }
+    byBasis[b].push(o);
+  });
+  return {units, groups: order.map(b => ({basis: b, opts: byBasis[b]})), mixed: order.length > 1};
+}
 function parseAgeRange(s){
   const m = String(s || '').match(/(\d{2})\s*(?:-|–|—|to)\s*(\d{2})/);
   if (m) return [+m[1], +m[2]];
@@ -113,7 +152,7 @@ function segZ(seg, opt, cfg, dimList){
   const A = dimList.reduce((a, d) => a + c[d.key], 0) / dimList.length;
   let z, wtpTerm = 0;
   if (cfg.type === 'pricing'){
-    const p = parsePrice(opt);
+    const p = normalizedPrice(opt);   // annualised, so $9/month is compared at 108
     wtpTerm = p === null ? 0 : (seg.wtp - p) / (0.62 * seg.sd);
     z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + 0.90 * A;
   } else {
@@ -193,22 +232,39 @@ function simulate(cfg){
     return clamp(1.96 * se + 0.016, 0.005, 0.18);
   });
 
-  let second = null;
+  // Billing cadence. When pricing options sit on different bases — a
+  // subscription against a one-time fee, or a bare number against either — they
+  // cannot be ranked without inventing a time horizon, which is the same class
+  // of error as reading "$9/month" as 9. Detect it and refuse rather than
+  // produce a confident wrong number.
+  let billing = null, incomparable = null;
   if (cfg.type === 'pricing'){
-    const rev = opts.map((o, oi) => (popRate[oi] * (parsePrice(o) || 0)));
+    billing = billingReport(opts);
+    if (billing.mixed) incomparable = {reason: 'mixed-billing', groups: billing.groups};
+  }
+
+  // Revenue index, on the normalised (annualised) price. Withheld when the
+  // options are not comparable — a cross-basis revenue number would be fiction.
+  let second = null;
+  if (cfg.type === 'pricing' && !incomparable){
+    const rev = opts.map((o, oi) => (popRate[oi] * (normalizedPrice(o) || 0)));
     const mx = Math.max.apply(null, rev) || 1;
     second = {label:'Revenue index', vals: rev.map(v => Math.round(v / mx * 100)),
               suffix:'', best: rev.indexOf(Math.max.apply(null, rev))};
   }
 
-  // winner is decided on revenue for pricing, on rate otherwise
+  // Winner: on revenue for a rankable pricing decision, on buy rate otherwise.
+  // A refused (mixed-billing) run has no revenue index, so it falls back to buy
+  // rate only to keep a stable table order — the UI does not present it as the
+  // decision.
   const rank = opts.map((o, i) => i).sort((a, b) =>
-    cfg.type === 'pricing' ? second.vals[b] - second.vals[a] : popRate[b] - popRate[a]);
+    second ? second.vals[b] - second.vals[a] : popRate[b] - popRate[a]);
   const win = rank[0], run = rank[1] !== undefined ? rank[1] : rank[0];
 
   // Is the lead real, or inside the noise? For pricing the decision metric is
-  // revenue, so the tie test has to run on revenue, not on the raw buy rate.
-  const tie = opts.length < 2 ? false : (cfg.type === 'pricing'
+  // revenue, so the tie test runs on revenue, not the raw buy rate. A refusal to
+  // rank is not a tie — it is a decline to compare at all.
+  const tie = (opts.length < 2 || incomparable) ? false : (second
     ? Math.abs(second.vals[win] - second.vals[run]) <= 4
     : (popRate[win] - popRate[run]) <= (ci[win] + ci[run]) * 0.55);
 
@@ -232,7 +288,8 @@ function simulate(cfg){
   });
 
   return {opts, segs, segRates, popRate, ci, second, win, run, rank, drivers,
-          agents, spread, splitSeg, tie, n: cfg.popN, seed: cfg.seed, ts: new Date()};
+          agents, spread, splitSeg, tie, incomparable, billing,
+          n: cfg.popN, seed: cfg.seed, ts: new Date()};
 }
 
 function quoteFor(agent, oi, opts){
@@ -439,7 +496,7 @@ function parseOutcome(entered){
 return {
   h32, rng, logistic, clamp,
   CORE_DIMS, TRAIT_KEYS, DIMLBL, dimLabel, dims,
-  parsePrice, parseAgeRange,
+  parsePrice, parseBillingUnit, normalizedPrice, billingReport, parseAgeRange,
   latent, contribs, activeSegs, segZ, buildAgents, simulate, quoteFor,
   extractJSON, validateMarket, completenessGaps, coherenceWarning,
   ledgerStats, parseOutcome,

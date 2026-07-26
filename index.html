@@ -893,37 +893,70 @@ function view4(){
   const R = S.result, T = TYPES[S.type], M = MARKETS[S.market];
   const w = R.win, rate = R.popRate[w], ci = R.ci[w];
   const gap = R.popRate[w]-R.popRate[R.run];
-  const conf = ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional';
+  const incomp = R.incomparable;                 // options on different billing bases; refuse to rank
+  // For pricing the decision is made on revenue, so the margin and the
+  // confidence badge must speak revenue, not the buy rate that sits beside them.
+  const isPricing = !!R.second;
+  const revGap = isPricing ? R.second.vals[w] - R.second.vals[R.run] : 0;
+  const conf = isPricing
+    ? (Math.abs(revGap) <= 4 ? 'Directional' : Math.abs(revGap) < 12 ? 'Moderate' : 'High')
+    : (ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional');
   const maxRate = Math.max(...R.popRate)||1;
 
   const secondBlock = R.second ? `
     <div class="metric"><div class="v">${R.second.vals[w]}</div>
       <div class="k">${R.second.label}</div><div class="ci">peak of the tested range</div></div>` : '';
 
+  // Mixed billing bases can't be ranked without inventing a time horizon; say so
+  // loudly, the way a population/decision mismatch does, and name the groups.
+  const basisLabel = {recurring:'Recurring (per period)', onetime:'One-time', unspecified:'No period stated'};
+  const incompBanner = incomp ? `<div class="mismatch"><span class="ic">▲</span><span class="tx">
+    <b>Options are not comparable</b>These prices are quoted on different bases, so ranking them would mean inventing a time horizon and a retention assumption — the same guesswork that makes “$9/month” look cheaper than “$19/year”. Put them on one basis and re-run.
+    <span style="display:block;margin-top:7px;color:var(--faint)">${incomp.groups.map(g=>`<b style="display:inline;color:var(--ink2);text-transform:none;letter-spacing:0;font-family:inherit">${basisLabel[g.basis]||g.basis}</b>: ${g.opts.map(esc).join(', ')}`).join(' &nbsp;·&nbsp; ')}</span>
+  </span></div>` : '';
+
   return `
   <div class="eyebrow">04 &nbsp;The Prediction</div>
   <h1 style="font-size:26px;max-width:760px">${esc(S.q)}</h1>
   <div class="sub" style="margin-bottom:24px">${esc(M.name)} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
   ${mismatchBanner()}
+  ${incompBanner}
 
   <div class="headline">
+    ${incomp ? `
+    <div class="lbl" style="color:var(--red);margin-bottom:4px">No ranking</div>
+    <div class="verdict"><b>${R.opts.map(esc).join('</b> <span style="color:var(--muted);font-size:20px">·</span> <b>')}</b></div>
+    <div style="color:var(--ink2);max-width:640px;font-size:13.5px">
+      Each option's buy rate is shown below, but they are not on a common basis, so there is no meaningful winner or revenue comparison between them. This is the honest answer, not a failure: a confident cross-basis number would be worse than none.
+    </div>
+    <div class="metrics">
+      ${R.opts.map((o,i)=>`<div class="metric"><div class="v" style="font-size:22px">${pct(R.popRate[i])}%</div>
+        <div class="k">${esc(o)}</div><div class="ci">±${pct(R.ci[i])} · ${basisLabel[Engine.billingReport([o]).groups[0].basis]||''}</div></div>`).join('')}
+    </div>` : `
     <div class="lbl" style="color:${R.tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${R.tie?'Too close to call':'Most likely to win'}</div>
     <div class="verdict">${R.tie?`<b>${esc(R.opts[w])}</b> <span style="color:var(--muted);font-size:20px">or</span> <b>${esc(R.opts[R.run])}</b>`:`<b>${esc(R.opts[w])}</b>`}</div>
     <div style="color:var(--ink2);max-width:640px;font-size:13.5px">
       ${R.tie
-        ? `These two are inside the noise${R.second?' on revenue':''} — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
-        : `${pct(rate)}% of the population would ${T.verb} it — ${(gap*100).toFixed(1)} points clear of ${esc(R.opts[R.run])}, a gap wider than the interval.`}
+        ? (isPricing
+          ? `These two are inside the noise <b style="color:var(--ink2)">on revenue</b> — revenue index ${R.second.vals[w]} vs ${R.second.vals[R.run]} (the ${pct(rate)}% vs ${pct(R.popRate[R.run])}% ${T.verb} rates are a different metric). Re-drawing the sample flips the revenue order, so the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
+          : `These two are inside the noise — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`)
+        : (isPricing
+          ? `It earns the most across the tested range — revenue index ${R.second.vals[w]} vs ${esc(R.opts[R.run])} at ${R.second.vals[R.run]}, a lead wider than the noise. ${pct(rate)}% would ${T.verb} it at this price.`
+          : `${pct(rate)}% of the population would ${T.verb} it — ${(gap*100).toFixed(1)} points clear of ${esc(R.opts[R.run])}, a gap wider than the interval.`)}
       The result is carried by <b style="color:var(--ink)">${R.splitSeg.n}</b>, who diverge ${(R.spread*100).toFixed(1)} points from the population average.
     </div>
     <div class="metrics">
       <div class="metric"><div class="v">${pct(rate)}%</div>
         <div class="k">${T.metric}</div><div class="ci">±${pct(ci)} at 95%</div></div>
       ${secondBlock}
-      <div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
-        <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>
+      ${isPricing
+        ? `<div class="metric"><div class="v">${revGap>0?'+':''}${revGap}<span style="font-size:16px"> idx</span></div>
+             <div class="k">Revenue margin over runner-up</div><div class="ci">${esc(R.opts[R.run])} · rev idx ${R.second.vals[R.run]}</div></div>`
+        : `<div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
+             <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>`}
       <div class="metric"><div class="v" style="color:${conf==='High'?'var(--teal)':conf==='Moderate'?'var(--gold2)':'var(--red)'}">${conf}</div>
-        <div class="k">Confidence</div><div class="ci">${conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade'}</div></div>
-    </div>
+        <div class="k">Confidence</div><div class="ci">${isPricing?(conf==='Directional'?'revenue lead is inside the noise':'revenue lead clears the noise'):(conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade')}</div></div>
+    </div>`}
   </div>
 
   <div class="card">
@@ -934,7 +967,7 @@ function view4(){
       const isw = i===w;
       return `<div class="orow">
         <div>
-          <div class="oname">${esc(o)} ${isw?`<span class="win">${R.tie?'JOINT FIRST':'PREDICTED WINNER'}</span>`:(R.tie&&i===R.run?'<span class="win">JOINT FIRST</span>':'')}</div>
+          <div class="oname">${esc(o)} ${incomp?'':isw?`<span class="win">${R.tie?'JOINT FIRST':'PREDICTED WINNER'}</span>`:(R.tie&&i===R.run?'<span class="win">JOINT FIRST</span>':'')}</div>
           <div class="track ${isw?'':'dim'}">
             <i style="width:${(p/maxRate*100).toFixed(1)}%"></i>
             <span class="cib" style="left:${(lo/maxRate*100).toFixed(1)}%;width:${((hi-lo)/maxRate*100).toFixed(1)}%"></span>
