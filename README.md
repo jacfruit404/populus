@@ -1,233 +1,231 @@
 # Populus
 
-**Test the decision before you commit to it.**
+**Test a decision against a simulated population before you commit to it.**
 
-Populus builds a simulated population of people and runs your decision against them
-first — pricing, launch scope, messaging, or policy. The output is not a dashboard.
-It is a prediction: what will happen, which segments drive it, and where the answer
-is too close to call.
+You are about to set a price, pick a launch feature, choose a claim for the
+packaging, or push a policy. Populus builds a population of synthetic people,
+runs your options past each of them, and tells you what is likely to happen —
+which segments drive the result, and where the answer is too close to call.
 
-This repo is a working single-file prototype. No build step, no dependencies,
-no cloud calls.
-
-```bash
-./serve.sh          # then open http://localhost:8765
-```
-
-Use the script rather than double-clicking the file. Serving over `localhost`
-is what lets the local model panel work — see *Local model* below.
-
-> **Opening `index.html` in TextEdit shows a blank page.** The file is fine.
-> TextEdit *renders* HTML rather than showing source, and this page's `<body>`
-> is an empty shell that JavaScript fills in — which TextEdit does not run, so
-> you get a blank document. To read the source, use a code editor, or
-> `cat index.html`, or set TextEdit → Settings → Open and Save →
-> "Display HTML files as HTML code". To *use* it, open it in a browser.
+Runs entirely on your machine. No accounts, no API keys, no data leaves the box.
 
 ---
 
-## The loop
+## Quick start
 
-1. **Frame the decision** — pick a decision type, state the question, list the options you are choosing between.
-2. **Build the population** — choose a market, include or exclude segments, set the sample size.
-3. **Run the simulation** — agents respond to every option under their own constraints.
-4. **Read the prediction** — outcome, per-segment breakdown, drivers, individual voices, calibration.
-
-Four presets load instantly: refill pricing (grocery), launch wedge (SMB software),
-lead claim (DTC skincare), fare-freeze policy (UK electorate).
-
-## What is actually modeled
-
-**Agent-level, not segment-level.** ~260 individual agents are drawn, each with a
-segment, an idiosyncratic offset from that segment's mean, and a personal response
-probability per option. Segment and population rates are aggregated *up* from
-individual verdicts — they are not written down and then decorated.
-
-**Real willingness-to-pay math for pricing.** Each segment carries a WTP distribution
-(mean and spread). Buy probability is a logistic function of the gap between WTP and
-the asking price, which produces a genuine downward-sloping demand curve at both the
-population and the segment level. The revenue index multiplies rate by price to find
-the optimum, which is frequently *not* the highest-conversion price.
-
-**Latent affinity for everything else.** Non-pricing options are projected into six
-dimensions — value framing, novelty appetite, institutional trust, claim credibility,
-switching effort, social proof. Each segment has a weight on each dimension. Driver
-labels change with the decision type, so a policy run reads "household cost impact"
-where a pricing run reads "price vs. reference point."
-
-**A structural floor and ceiling.** Roughly 4% of agents are never in the category and
-about 3% will act regardless of the option, so no result ever reads 0% or 100%.
-
-**Intervals that mean something.** The 95% band combines sampling error, which shrinks
-as you raise the sample size, with an irreducible model-error term that does not. You
-cannot buy your way to certainty by simulating more agents.
-
-**Tie detection.** If the gap between the top two options sits inside the noise, the
-headline says *Too close to call* and badges both as joint first, rather than
-manufacturing a winner. For pricing this test runs on revenue, not on the buy rate,
-because revenue is the decision metric.
-
-## Why it is deterministic
-
-Determinism here is a property, not a shortcut. Given a seed, the same inputs return
-byte-identical output — which is what makes a prediction auditable. You can log a
-number, ship the decision, and later re-run the exact simulation that produced it.
-A model that quietly returns something different each time cannot be scored against
-reality, and scoring against reality is the whole premise.
-
-Randomness lives where it belongs: in **which** agents get drawn, not in how the
-population behaves. `Draw a new sample` increments the seed and re-rolls the sample.
-The population's structure is unchanged; the specific 260 people are different. This
-is a sampling distribution you can watch directly — and if the winner flips between
-samples, the gap was never real. That is the interval doing its job, visibly.
-
-## Local model
-
-Populus talks to a local LLM to build and edit populations. Everything stays on
-the machine — no keys, no cloud, no data leaving the box.
-
-**Setup**
+Requires Python 3 (already on macOS and most Linux) and a browser.
 
 ```bash
-ollama pull qwen2.5:14b     # or any instruct model you prefer
-./serve.sh                  # http://localhost:8765
+git clone git@github.com:jacfruit404/populus.git
+cd populus
+./serve.sh
 ```
 
-Step 2 auto-detects the server at `http://127.0.0.1:11434`, lists installed
-models, and shows a connection light. Any OpenAI-compatible or Ollama-native
-endpoint works — point it at LM Studio or llama.cpp by changing the endpoint field.
+Open **http://localhost:8765**.
 
-**Populations are not limited to the six core traits.** A generated population
-may declare its own dimensions — health consciousness, trust in imported goods,
-familiarity with a brand, regulatory caution — and they enter the model exactly
-like the built-in six, showing up as drivers under the population's own labels.
-Mark a dimension `"invert": true` when a high score pushes *against* the option:
-health consciousness resists a snack, safety concern resists an experimental
-product.
+> Open it through the server, not by double-clicking `index.html`. A page opened
+> from `file://` cannot talk to a local model — see [Troubleshooting](#troubleshooting).
 
-Segments also carry demographics — country, age range, income level, urban
-share — which flow down to individual agents. A Japan segment specified as
-35–44 and affluent produces agents in that band with that income, and clicking
-any one of them shows it.
+Four presets load instantly, so you can click through a full run before setting
+anything up.
 
-**Multi-market example.** The brief *"consumers across China, Japan, South
-Korea, Singapore, Thailand, Malaysia, the Philippines, Vietnam and Indonesia
-buying imported American snacks; include familiarity with American brands,
-health consciousness, trust in imported products, and willingness to try new
-snacks"* returns a six-country population in about 50 seconds, with all four
-dimensions and per-country willingness-to-pay from $3.90 to $6.10. Run a pricing
-decision against it and the segment table shows Singapore at 97% and Thailand at
-59% for the same $3.99 pack — which is the whole point of not blurring an
-audience into a single number.
+---
 
-**Two modes**
+## How it works
 
-- **Generate new** — describe an audience in a sentence ("UK small-scale organic farmers deciding whether to install solar") and get a full population: segments, trait weights, willingness-to-pay distributions, and verbatim banks.
-- **Edit current** — send the population you're looking at back with an instruction ("split the price-sensitive segment into renters and owners, drop willingness to pay by a third") and get the modified version. The original is left intact; the edit lands as a new market.
+Four steps, top to bottom.
 
-**The division of labour matters.** The model writes the *population spec* only.
-It never touches `simulate()`. Willingness-to-pay curves, the floor and ceiling,
-interval construction, and the tie test all stay in auditable code. An LLM that
-could also invent the physics would produce numbers nobody could check — the
-point is that the model proposes who exists, and fixed math decides what they do.
+**1 · Frame the decision.** Pick a type — pricing, product, messaging or policy —
+write the question you are actually asking, and list the options you are choosing
+between.
 
-**Output is validated, not trusted.** `validateMarket()` repairs what is safely
-repairable and rejects what is not:
+**2 · Build the population.** Choose a market, include or exclude segments, set
+the sample size. Four markets ship with the app; you can generate your own with a
+local model.
 
-| Repaired | Rejected |
+**3 · Run.** Every agent responds to every option under its own constraints.
+
+**4 · Read the prediction.**
+
+| Tab | What it shows |
 |---|---|
-| Traits given on a 0–100 scale → rescaled | Fewer than 2 segments |
-| Missing traits → defaulted to 0.5 | Response that isn't an object |
-| Quotes missing the `{O}` token → token appended | Segments near-identical across all six traits |
-| `{O}` leaking into segment names or descriptions → stripped | |
-| Shares that don't sum to 1 → renormalised | |
-| Short name pools and missing context → padded | |
+| Segment response | How each segment answers, and where a segment's best option disagrees with the population's — that disagreement is the trade-off hiding in your decision |
+| What moved it | The winner decomposed against the runner-up, dimension by dimension |
+| Voices | Individual agents responding in their own words |
+| The population | Every agent as a square, coloured by segment, solid if they would say yes. Click one to inspect them |
+| Calibration | Predictions you have committed, scored against what actually happened |
 
-Observed rates on qwen2.5:14b: a five-segment population typically needs
-around ten quote repairs, because the model reliably drops the `{O}` token from
-negative quotes while keeping it in positive ones.
+### Reading the result
 
-**A model answers the minimum it can get away with.** When demographics and
-custom dimensions were described as optional, qwen2.5:14b returned none of them
-— five generic segments, no countries, no extra traits, for a brief that named
-nine markets. Marking every field REQUIRED in the schema fixed it outright. A
-second safeguard remains: `completenessGaps()` checks the result for missing
-field groups and, if any are absent, sends the population back once asking for
-exactly those. The panel logs when this fires.
+The headline names the option most likely to win and how far clear it is. When
+the gap sits inside the noise it says **Too close to call** and badges both
+options as joint first, rather than manufacturing a winner. For pricing that test
+runs on revenue, not on the buy rate, because revenue is the decision metric.
 
-**Cosmetic splits are flagged.** Ask a model to "split segment X into A and B"
-and it will often duplicate the segment and change only the label — same traits,
-same willingness to pay, same quotes. Two segments that behave identically are
-one segment wearing two names, and the segment table would imply a distinction
-that isn't there. Any pair within 3% on every trait and on WTP gets reported in
-the panel as *the split is cosmetic*.
+**Draw a new sample** re-rolls which agents get surveyed without changing the
+population. If the winner flips between samples, the gap was never real — that is
+the confidence interval doing its job where you can see it.
 
-That last rejection is the important one. A model under-specified or asked for a
-narrow audience will sometimes emit five segments with nearly identical trait
-vectors, which looks like a population but cannot produce a meaningful segment
-split. Mean trait spread below 0.12 is treated as a collapse and thrown out, with
-the reason logged in the panel.
+---
+
+## Generating populations with a local model
+
+Populus can build a population from a sentence. It talks to [Ollama](https://ollama.com)
+on `http://127.0.0.1:11434`, or any OpenAI-compatible local server — point the
+endpoint field at LM Studio or llama.cpp instead if you prefer.
+
+```bash
+ollama pull qwen2.5:14b     # ~9GB; any instruct model works
+./serve.sh
+```
+
+Step 2 detects the server, lists your models, and shows a connection light.
+
+**Generate new** — describe an audience:
+
+> *consumers across China, Japan, South Korea, Singapore and Indonesia who buy
+> imported American snacks; include familiarity with American brands, health
+> consciousness, and trust in imported products as dimensions*
+
+**Edit current** — hand the population on screen back with an instruction:
+
+> *split the price-sensitive segment into renters and owners, and lower
+> willingness to pay by a third*
+
+The original is never modified; edits land as a new population.
+
+### What the model is and is not allowed to do
+
+The model writes the **population** — who exists, how they behave, what they
+would pay. It never touches the simulation itself. Willingness-to-pay curves,
+confidence intervals and the tie test stay in ordinary auditable code. A model
+that could also invent the maths would produce numbers nobody could check.
+
+Output is validated rather than trusted. Common problems are repaired and
+reported in the panel log:
+
+- traits given on a 0–100 scale, rescaled
+- missing traits, defaulted
+- quotes that never mention the option, dropped
+- shares that don't sum to 1, renormalised
+- a "split" that produced two behaviourally identical segments, flagged as cosmetic
+
+A population whose segments all score alike is rejected outright — it looks like a
+population but cannot produce a meaningful segment split.
+
+Populus also warns if you point a decision at a population built for something
+else, since the traits and prices would be meaningless.
+
+### Custom dimensions
+
+Beyond six core behavioural traits — price sensitivity, novelty appetite, trust,
+scepticism, switching friction, social proof — a population can declare its own
+dimensions, and they enter the model exactly like the built-in ones. Mark one
+`"invert": true` when a high score pushes *against* the option; health
+consciousness resists a snack.
+
+Segments also carry country, age range, income and urban share, and agents
+inherit them.
+
+---
 
 ## The calibration ledger
 
-A model that is not scored against outcomes is a dashboard. The ledger is where
-predictions are committed and held open until reality closes them.
+A model that is not scored against outcomes is a dashboard.
 
-**Commit** a prediction when you actually ship the decision — not on every run.
-The record freezes the question, the winning option, the predicted rate, the
-interval, the seed, the sample size and the population. None of it can be edited
-afterwards. Only the outcome can be added.
+**Commit** a prediction when you actually ship the decision. The record freezes
+the question, the winning option, the predicted rate, the interval, the seed and
+the population. It cannot be edited afterwards — only an outcome can be added.
 
-**Close** it when you know what happened: enter the observed figure and a note on
-how it was measured. Three statistics then accumulate:
+**Close** it when you know what happened. Three numbers accumulate:
 
-| Statistic | What it tells you |
-|---|---|
-| Mean absolute error | how wrong the model is, on average |
-| Bias | whether it systematically over- or under-predicts |
-| **Interval coverage** | whether the stated intervals mean anything |
+- **Mean absolute error** — how wrong the model is on average
+- **Bias** — whether it systematically over- or under-predicts
+- **Interval coverage** — whether the intervals mean anything
 
-Coverage is the one that matters. If the 95% intervals are honest, roughly 95%
-of outcomes should land inside them. Coverage far below that means the model is
-overconfident and the intervals are decoration. The tab says so when n is small,
-because five closed predictions is not a track record.
+Coverage is the one to watch. If the 95% intervals are honest, about 95% of
+outcomes should land inside them. Much lower means the model is overconfident and
+the intervals are decoration.
 
-Predictions are written to `ledger.json` next to the app — plain text,
-inspectable, atomically written, and gitignored so your decisions stay private.
-If the page is served by something that cannot accept the write, it falls back to
-browser storage and tells you it has done so.
+Predictions are written to `ledger.json` beside the app: plain text, atomically
+written, and gitignored so your decisions stay private. The ledger starts empty
+and says so — until several predictions are closed, the model has no track record
+and its numbers deserve no particular trust.
 
-**Earlier versions of this tab showed five fabricated rows.** They are gone. An
-invented track record is worse than an empty one, and the empty state now says
-plainly that the model has no evidence behind it yet.
+---
+
+## Adding a market by hand
+
+Everything about the built-in populations lives in the `MARKETS` object near the
+top of the script block in `index.html`. Each segment carries:
+
+```js
+{
+  n: 'Value Maximizers',              // name
+  s: 0.31,                            // share of the market
+  b: 'Shop the unit price…',          // one-line description
+  t: { price:.88, novelty:.28, trust:.42,
+       skeptic:.62, effort:.35, social:.30 },   // traits, 0–1
+  wtp: 6.20, sd: 1.80,                // willingness to pay, mean and spread
+  pos: ['At {O} I would switch.'],    // quotes; {O} is the option under test
+  neg: ['{O} is a lot for dish soap.']
+}
+```
+
+That is the only place you need to touch. The engine — `latent()`, `segZ()`,
+`buildAgents()`, `simulate()` — sits below it.
+
+---
+
+## Troubleshooting
+
+**The model panel says "Not reachable".**
+The page is almost certainly running from `file://`. Check the address bar reads
+`http://localhost:8765`. A page loaded from a file sends `Origin: null`, and
+Ollama returns 403 to that; from localhost it returns 200. If the address is
+right, press **Reconnect** — the probe only runs automatically the first time you
+reach step 2.
+
+**"No models installed".**
+Ollama is running but empty. `ollama pull qwen2.5:14b`.
+
+**Opening `index.html` in TextEdit shows a blank page.**
+The file is fine. TextEdit renders HTML rather than showing source, and this
+page's body is built by JavaScript, which TextEdit does not run. Use a code
+editor, or `cat index.html`, or TextEdit → Settings → Open and Save → *Display
+HTML files as HTML code*.
+
+**Port 8765 is busy.**
+`./serve.sh 9000`, or free it with `lsof -ti:8765 | xargs kill`.
+
+**The ledger says "browser storage only".**
+Something other than `serve.sh` is serving the page, and it cannot accept the
+write. Predictions will not survive clearing site data.
+
+---
+
+## What this is not
+
+Populus is a working prototype, not a validated research instrument.
+
+- **The four built-in markets are hand-authored.** The machinery is real; the numbers in them are illustrative and were not fitted to data.
+- **Model-generated populations are plausible fiction** until grounded in something. They are a fast way to think, not evidence.
+- **Verbatims are the weakest output.** A 14B model produces serviceable but flat quotes. A larger model helps; the schema cannot.
+- **Outcomes are typed in by hand.** Nothing stops you entering a figure that flatters the model. Self-reported calibration beats none, but a real version would read from till or billing data.
+- **Everything except the ledger is in memory.** Reloading clears run history and any generated populations.
+
+Take it as a structured way to reason about who a decision lands on and where it
+is genuinely uncertain — not as a substitute for asking real people.
+
+---
 
 ## Layout
 
 ```
-index.html    the entire prototype — markup, styles, engine, all of it
-serve.py      static server + the ledger read/write API
-serve.sh      wrapper: checks Ollama, then starts serve.py
+index.html    the whole app — markup, styles, simulation engine
+serve.py      static server plus the ledger read/write API
+serve.sh      checks Ollama, then starts serve.py
 ledger.json   your committed predictions (created on first commit, gitignored)
-README.md     this file
 ```
 
-The simulation engine is the `ENGINE` section of the script block: `latent()`,
-`segZ()`, `buildAgents()`, and `simulate()`. Markets, segments, WTP values, trait
-weights, and the verbatim banks are the `MARKETS` object above it — that is the only
-place you need to touch to add a market.
-
-## Known limits
-
-- The four built-in markets are hand-authored, not fit to data. The machinery is real; the parameters are illustrative. Model-generated populations are plausible fiction until grounded in something.
-- Verbatims are template-driven per segment, not generated. They demonstrate the surface, not the linguistic range.
-- The calibration ledger is real but manual — outcomes are typed in by hand. Nothing is wired to a live outcome feed, and nothing stops you entering a number that flatters the model.
-- Everything is in-memory. Reloading the page clears run history and any generated populations.
-- Generated populations are not persisted or exportable yet. That is the obvious next commit.
-- The model ignores the currency field about half the time — ask for a UK population and it still returns `"cur": "$"`. Cosmetic, affects labels only, not the math.
-
-## Open questions
-
-Two decisions drive most of the real architecture:
-
-1. **Which wedge leads** — pricing has the cleanest ROI story and validates against shelf and billing data; messaging has more volume but far weaker ground truth.
-2. **Panel or per-query** — whether agents are generated fresh for each question or maintained as a persistent panel that gets re-run over time. The second makes longitudinal calibration possible and is much harder to build.
+No build step, no dependencies, no bundler.
