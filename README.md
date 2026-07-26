@@ -7,8 +7,22 @@ first — pricing, launch scope, messaging, or policy. The output is not a dashb
 It is a prediction: what will happen, which segments drive it, and where the answer
 is too close to call.
 
-This repo is a working single-file prototype. Open `index.html` in any browser.
-No build step, no dependencies, no network calls.
+This repo is a working single-file prototype. No build step, no dependencies,
+no cloud calls.
+
+```bash
+./serve.sh          # then open http://localhost:8765
+```
+
+Use the script rather than double-clicking the file. Serving over `localhost`
+is what lets the local model panel work — see *Local model* below.
+
+> **Opening `index.html` in TextEdit shows a blank page.** The file is fine.
+> TextEdit *renders* HTML rather than showing source, and this page's `<body>`
+> is an empty shell that JavaScript fills in — which TextEdit does not run, so
+> you get a blank document. To read the source, use a code editor, or
+> `cat index.html`, or set TextEdit → Settings → Open and Save →
+> "Display HTML files as HTML code". To *use* it, open it in a browser.
 
 ---
 
@@ -67,10 +81,55 @@ The population's structure is unchanged; the specific 260 people are different. 
 is a sampling distribution you can watch directly — and if the winner flips between
 samples, the gap was never real. That is the interval doing its job, visibly.
 
+## Local model
+
+Populus talks to a local LLM to build and edit populations. Everything stays on
+the machine — no keys, no cloud, no data leaving the box.
+
+**Setup**
+
+```bash
+ollama pull qwen2.5:14b     # or any instruct model you prefer
+./serve.sh                  # http://localhost:8765
+```
+
+Step 2 auto-detects the server at `http://127.0.0.1:11434`, lists installed
+models, and shows a connection light. Any OpenAI-compatible or Ollama-native
+endpoint works — point it at LM Studio or llama.cpp by changing the endpoint field.
+
+**Two modes**
+
+- **Generate new** — describe an audience in a sentence ("UK small-scale organic farmers deciding whether to install solar") and get a full population: segments, trait weights, willingness-to-pay distributions, and verbatim banks.
+- **Edit current** — send the population you're looking at back with an instruction ("split the price-sensitive segment into renters and owners, drop willingness to pay by a third") and get the modified version. The original is left intact; the edit lands as a new market.
+
+**The division of labour matters.** The model writes the *population spec* only.
+It never touches `simulate()`. Willingness-to-pay curves, the floor and ceiling,
+interval construction, and the tie test all stay in auditable code. An LLM that
+could also invent the physics would produce numbers nobody could check — the
+point is that the model proposes who exists, and fixed math decides what they do.
+
+**Output is validated, not trusted.** `validateMarket()` repairs what is safely
+repairable and rejects what is not:
+
+| Repaired | Rejected |
+|---|---|
+| Traits given on a 0–100 scale → rescaled | Fewer than 2 segments |
+| Missing traits → defaulted to 0.5 | Response that isn't an object |
+| Quotes missing the `{O}` token → token appended | Segments that are near-identical across all six traits |
+| Shares that don't sum to 1 → renormalised | |
+| Short name pools and missing context → padded | |
+
+That last rejection is the important one. A model under-specified or asked for a
+narrow audience will sometimes emit five segments with nearly identical trait
+vectors, which looks like a population but cannot produce a meaningful segment
+split. Mean trait spread below 0.12 is treated as a collapse and thrown out, with
+the reason logged in the panel.
+
 ## Layout
 
 ```
 index.html    the entire prototype — markup, styles, engine, all of it
+serve.sh      local http server; also checks whether Ollama is up
 README.md     this file
 ```
 
@@ -81,10 +140,11 @@ place you need to touch to add a market.
 
 ## Known limits
 
-- Segment definitions, WTP values, and trait weights are hand-authored, not fit to data. The machinery is real; the parameters are illustrative.
+- The four built-in markets are hand-authored, not fit to data. The machinery is real; the parameters are illustrative. Model-generated populations are plausible fiction until grounded in something.
 - Verbatims are template-driven per segment, not generated. They demonstrate the surface, not the linguistic range.
 - The calibration ledger shows illustrative prior predictions. Nothing is wired to an outcome feed yet.
-- Everything is in-memory. Reloading the page clears run history.
+- Everything is in-memory. Reloading the page clears run history and any generated populations.
+- Generated populations are not persisted or exportable yet. That is the obvious next commit.
 
 ## Open questions
 

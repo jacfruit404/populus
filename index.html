@@ -194,6 +194,26 @@ table.mx td:first-child{font-size:12.5px}
 .resp .rq{font-family:var(--serif);font-size:13px;color:var(--ink2);margin-top:6px;line-height:1.45}
 .note{font-size:11.5px;color:var(--faint);line-height:1.6;margin-top:16px;padding-top:14px;border-top:1px solid var(--line2)}
 .empty{color:var(--faint);font-size:13px;text-align:center;padding:40px 0}
+/* ---------- local model panel ---------- */
+.llm{border:1px solid rgba(79,179,165,.3);background:linear-gradient(160deg,rgba(79,179,165,.07),transparent 60%)}
+.conn{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);margin-bottom:14px;flex-wrap:wrap}
+.led{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+.led.ok{background:var(--teal);box-shadow:0 0 8px rgba(79,179,165,.7)}
+.led.bad{background:var(--red)}
+.led.wait{background:var(--gold);animation:pulse 1.2s infinite}
+.fld{display:flex;gap:8px;align-items:center;margin-bottom:9px}
+.fld label{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);width:74px;flex:0 0 74px}
+.fld input,.fld select{flex:1;background:var(--bg2);border:1px solid var(--line);border-radius:7px;padding:8px 11px;font-size:12.5px;outline:none}
+.fld input:focus,.fld select:focus{border-color:rgba(79,179,165,.55)}
+.fld select option{background:var(--panel)}
+.modes{display:flex;gap:6px;margin-bottom:12px}
+.mode{padding:6px 12px;border-radius:7px;border:1px solid var(--line);font-size:12px;color:var(--muted)}
+.mode.on{border-color:var(--teal);color:var(--teal);background:rgba(79,179,165,.1)}
+.llmlog{font-family:var(--mono);font-size:10.5px;line-height:1.75;color:var(--faint);margin-top:12px;
+  max-height:150px;overflow-y:auto;border-top:1px solid var(--line2);padding-top:10px}
+.llmlog b{color:var(--teal);font-weight:400}
+.llmlog i{color:var(--red);font-style:normal}
+.llmlog u{color:var(--gold2);text-decoration:none}
 .fadein{animation:fi .45s ease both}
 @keyframes fi{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
 @media(max-width:900px){.app{grid-template-columns:1fr}.rail{display:none}.wrap{padding:28px 20px 80px}.grid4{grid-template-columns:1fr 1fr}}
@@ -225,7 +245,7 @@ function rng(seed){let a=seed>>>0;return function(){a=a+0x6D2B79F5|0;let t=Math.
 const logistic = z => 1/(1+Math.exp(-z));
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
 const pct = v => (v*100).toFixed(1);
-const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4'];
+const SEGC = ['#d9a441','#4fb3a5','#6d8fc4','#cd6a4c','#9b7fc4','#7fa66a','#c98fb0','#b0894f'];
 
 /* ============================== MARKETS ============================== */
 const MARKETS = {
@@ -363,8 +383,12 @@ let S = {
   step:1, type:'pricing', market:'grocery',
   q:PRESETS[0].q, opts:PRESETS[0].o.slice(),
   segsOn:[true,true,true,true,true], popN:12000,
-  result:null, agents:[], focusOpt:0, tab:'segments', history:[], seed:1
+  result:null, agents:[], focusOpt:0, tab:'segments', history:[], seed:1,
+  llm:{endpoint:'http://127.0.0.1:11434', model:'', models:[], status:'unknown', busy:false,
+       mode:'new', prompt:'', log:[]}
 };
+// segment toggles must track the market's actual segment count, not a fixed 5
+const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
 
 /* ============================== ENGINE ============================== */
 function latent(text){
@@ -509,6 +533,182 @@ function quoteFor(a, oi){
   return bank[a.qi % bank.length].replace(/\{O\}/g, opt);
 }
 
+/* ============================== LOCAL MODEL ==============================
+   Talks to an OpenAI-compatible or Ollama-native local server. Nothing leaves
+   the machine. The model's only job is to emit a population spec; the physics
+   of the simulation stay in simulate() where they can be audited.
+========================================================================== */
+const TRAIT_KEYS = ['price','novelty','trust','skeptic','effort','social'];
+
+const SCHEMA_PROMPT = `You design synthetic populations for a decision-simulation engine.
+Return ONLY a JSON object, no prose, matching exactly this shape:
+
+{
+  "name": "short market name, e.g. 'UK small-scale organic farmers'",
+  "universe": "approximate size, e.g. '≈12,000 holdings'",
+  "frame": "one sentence describing the evidence this population would be grounded in",
+  "unit": "$", "cur": "$",
+  "ctx": ["10 short life-context phrases, 2-6 words each, e.g. 'two kids, suburban'"],
+  "names": { "f": ["16 plausible first names for this population"], "l": ["12 plausible surnames"] },
+  "segs": [
+    {
+      "n": "Segment name, 2-4 words, evocative not generic",
+      "s": 0.30,
+      "b": "one sentence on how this segment actually behaves",
+      "t": { "price":0.0-1.0, "novelty":0.0-1.0, "trust":0.0-1.0, "skeptic":0.0-1.0, "effort":0.0-1.0, "social":0.0-1.0 },
+      "wtp": 12.5,
+      "sd": 4.0,
+      "pos": ["quote where they respond WELL, must contain the literal token {O}", "a second, different one"],
+      "neg": ["quote where they respond BADLY, must contain the literal token {O}", "a second, different one"]
+    }
+  ]
+}
+
+Rules:
+- 4 to 6 segments. "s" values must sum to approximately 1.0.
+- Trait meanings: price = price sensitivity, novelty = appetite for new things,
+  trust = trust in institutions and brands, skeptic = scepticism toward claims,
+  effort = resistance to switching or extra steps, social = influence of peers.
+  Spread these values widely across segments. Segments that all score alike are useless.
+- "wtp" is that segment's willingness to pay in the currency given, "sd" its spread. Vary these meaningfully between segments.
+- Quotes must sound like a real person talking, first person, specific, no marketing language.
+  Every quote must contain {O} where the option being tested would appear.
+- Output raw JSON only. No markdown fences, no commentary.`;
+
+function llmLog(msg, kind){
+  const tag = kind==='err' ? 'i' : kind==='warn' ? 'u' : 'b';
+  S.llm.log.push(`<${tag}>${msg}</${tag}>`);
+  if(S.llm.log.length>40) S.llm.log.shift();
+  const el = $('#llmlog'); if(el){ el.innerHTML = S.llm.log.join('<br>'); el.scrollTop = el.scrollHeight; }
+}
+async function llmProbe(silent){
+  const base = S.llm.endpoint.replace(/\/+$/,'');
+  S.llm.status='probing'; if(!silent) renderLLM();
+  try{
+    const r = await fetch(base+'/api/tags', {method:'GET'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j = await r.json();
+    S.llm.models = (j.models||[]).map(m=>m.name||m.model).filter(Boolean);
+    if(!S.llm.models.length){ S.llm.status='nomodels'; llmLog('Server reachable but no models installed. Run: ollama pull qwen2.5:14b','warn'); }
+    else{
+      S.llm.status='ok';
+      if(!S.llm.model || !S.llm.models.includes(S.llm.model)) S.llm.model = S.llm.models[0];
+      llmLog(`Connected. ${S.llm.models.length} model${S.llm.models.length>1?'s':''} available.`);
+    }
+  }catch(e){
+    S.llm.status='down';
+    llmLog('Cannot reach '+base+' — '+e.message,'err');
+    if(location.protocol==='file:') llmLog('Page is running from file:// — the server will reject that origin. Serve it over http://localhost instead (see serve.sh).','warn');
+  }
+  renderLLM();
+}
+async function llmChat(system, user){
+  const base = S.llm.endpoint.replace(/\/+$/,'');
+  const body = {model:S.llm.model, stream:false, format:'json',
+    options:{temperature:0.7, num_ctx:8192},
+    messages:[{role:'system',content:system},{role:'user',content:user}]};
+  const r = await fetch(base+'/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok) throw new Error('HTTP '+r.status+' from /api/chat');
+  const j = await r.json();
+  return (j.message && j.message.content) || '';
+}
+function extractJSON(txt){
+  let t = String(txt).trim().replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if(a<0||b<0) throw new Error('no JSON object in response');
+  return JSON.parse(t.slice(a,b+1));
+}
+
+/* Validate and repair. Small models drift on schemas, so anything safely
+   fixable is fixed and reported rather than thrown away. */
+function validateMarket(o){
+  const errs=[], fix=[];
+  if(!o || typeof o!=='object') { errs.push('response was not an object'); return {ok:false,errs,fix}; }
+  const m = {
+    name: String(o.name||'Custom population').slice(0,80),
+    universe: String(o.universe||'size not specified').slice(0,60),
+    frame: String(o.frame||'Generated by a local model; not grounded in collected evidence.').slice(0,200),
+    unit: String(o.unit||'$').slice(0,12),
+    cur: String(o.cur||'$').slice(0,3),
+    ctx: Array.isArray(o.ctx)? o.ctx.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.slice(0,48)) : [],
+    names: {f:[], l:[]}, segs: []
+  };
+  const nf = o.names&&Array.isArray(o.names.f)?o.names.f.filter(x=>typeof x==='string'&&x.trim()):[];
+  const nl = o.names&&Array.isArray(o.names.l)?o.names.l.filter(x=>typeof x==='string'&&x.trim()):[];
+  m.names.f = nf.length>=4 ? nf : (fix.push('first names padded'), nf.concat(['Alex','Sam','Jordan','Riley','Casey','Morgan','Taylor','Jamie']));
+  m.names.l = nl.length>=4 ? nl : (fix.push('surnames padded'), nl.concat(['Hayes','Okonkwo','Novak','Silva','Bennett','Iqbal']));
+  if(!m.ctx.length){ m.ctx = ['no context given']; fix.push('context phrases missing'); }
+
+  let segs = Array.isArray(o.segs)? o.segs : [];
+  if(segs.length<2){ errs.push('need at least 2 segments, got '+segs.length); return {ok:false,errs,fix}; }
+  if(segs.length>8){ segs = segs.slice(0,8); fix.push('trimmed to 8 segments'); }
+
+  segs.forEach((sg,i)=>{
+    const t={}; const st = (sg&&sg.t)||{};
+    TRAIT_KEYS.forEach(k=>{
+      let v = Number(st[k]);
+      if(!isFinite(v)){ v=0.5; fix.push(`seg ${i+1}: trait "${k}" missing`); }
+      if(v>1&&v<=100){ v=v/100; fix.push(`seg ${i+1}: trait "${k}" rescaled from 0-100`); }
+      t[k]=clamp(v,0,1);
+    });
+    let wtp=Number(sg.wtp), sd=Number(sg.sd);
+    if(!isFinite(wtp)||wtp<=0){ wtp=10; fix.push(`seg ${i+1}: wtp defaulted`); }
+    if(!isFinite(sd)||sd<=0){ sd=Math.max(1,wtp*0.3); fix.push(`seg ${i+1}: sd defaulted`); }
+    const clean = (arr,kind)=>{
+      let a = Array.isArray(arr)? arr.filter(x=>typeof x==='string'&&x.trim().length>8) : [];
+      a = a.map(x=>{ if(!x.includes('{O}')){ fix.push(`seg ${i+1}: ${kind} quote missing {O}`); return x.trim().replace(/[.?!]?$/,'')+' — {O}.'; } return x.trim(); });
+      if(!a.length){ fix.push(`seg ${i+1}: no ${kind} quotes`); a=[kind==='pos'?'{O} works for me.':'{O} is not for me.']; }
+      return a.slice(0,4);
+    };
+    m.segs.push({ n:String(sg.n||`Segment ${i+1}`).slice(0,42), s:Math.max(Number(sg.s)||0, 0.01),
+      b:String(sg.b||'No description given.').slice(0,150), t, wtp, sd,
+      pos:clean(sg.pos,'pos'), neg:clean(sg.neg,'neg') });
+  });
+
+  const tot = m.segs.reduce((a,b)=>a+b.s,0);
+  if(Math.abs(tot-1)>0.02) fix.push(`shares summed to ${tot.toFixed(2)}, renormalised`);
+  m.segs.forEach(s=> s.s = s.s/tot);
+
+  // a population whose segments all behave alike cannot produce a useful answer
+  const spread = TRAIT_KEYS.reduce((acc,k)=>{
+    const vals=m.segs.map(s=>s.t[k]); return acc+(Math.max(...vals)-Math.min(...vals));
+  },0)/TRAIT_KEYS.length;
+  if(spread<0.12) errs.push(`segments are nearly identical (mean trait spread ${spread.toFixed(2)}) — the model collapsed them`);
+
+  return {ok:errs.length===0, market:m, errs, fix, spread};
+}
+
+async function llmGenerate(){
+  if(S.llm.busy) return;
+  const p = S.llm.prompt.trim();
+  if(!p){ llmLog('Describe the population first.','warn'); return; }
+  if(S.llm.status!=='ok'){ llmLog('No model connected.','err'); return; }
+  S.llm.busy=true; renderLLM();
+  const editing = S.llm.mode==='edit';
+  const cur = MARKETS[S.market];
+  const user = editing
+    ? `Here is an existing population:\n\n${JSON.stringify({name:cur.name,universe:cur.universe,frame:cur.frame,unit:cur.unit,cur:cur.cur,ctx:cur.ctx,names:cur.names,segs:cur.segs},null,1)}\n\nApply this change and return the FULL modified object in the same schema:\n${p}`
+    : `Design a population for: ${p}`;
+  try{
+    llmLog(`${editing?'Editing':'Generating'} with ${S.llm.model}…`);
+    const t0 = performance.now();
+    const raw = await llmChat(SCHEMA_PROMPT, user);
+    llmLog(`Response in ${((performance.now()-t0)/1000).toFixed(1)}s, ${raw.length} chars.`);
+    const obj = extractJSON(raw);
+    const v = validateMarket(obj);
+    v.fix.forEach(f=>llmLog('repaired: '+f,'warn'));
+    if(!v.ok){ v.errs.forEach(e=>llmLog('rejected: '+e,'err')); S.llm.busy=false; renderLLM(); return; }
+    const key = 'custom_'+(Object.keys(MARKETS).filter(k=>k.startsWith('custom_')).length+1);
+    MARKETS[key] = v.market;
+    llmLog(`Accepted "${v.market.name}" — ${v.market.segs.length} segments, trait spread ${v.spread.toFixed(2)}.`);
+    S.market=key; S.segsOn=allOn(key); S.result=null; S.llm.busy=false;
+    render();
+  }catch(e){
+    llmLog('Failed: '+e.message,'err');
+    S.llm.busy=false; renderLLM();
+  }
+}
+
 /* ============================== RENDER: SHELL ============================== */
 const STEPS = [
   [1,'Frame the decision','What you are about to bet on'],
@@ -535,7 +735,7 @@ function render(){
   renderRail();
   const v = {1:view1,2:view2,3:view3,4:view4}[S.step];
   $('#main').innerHTML = `<div class="wrap fadein">${v()}</div>`;
-  if(S.step===2) drawPop();
+  if(S.step===2){ drawPop(); if(S.llm.status==='unknown') llmProbe(true); }
   if(S.step===4) setTimeout(drawPop,20);
 }
 
@@ -583,7 +783,7 @@ function view1(){
 }
 function usePreset(i){
   const p = PRESETS[i];
-  S.type=p.t; S.market=p.m; S.q=p.q; S.opts=p.o.slice(); S.segsOn=[true,true,true,true,true]; S.result=null;
+  S.type=p.t; S.market=p.m; S.q=p.q; S.opts=p.o.slice(); S.segsOn=allOn(p.m); S.result=null;
   render();
 }
 function setType(k){ S.type=k; render(); }
@@ -602,9 +802,12 @@ function view2(){
     <div class="lbl">Market</div>
     <div class="grid2">${Object.entries(MARKETS).map(([k,m])=>`
       <button class="tile ${S.market===k?'on':''}" onclick="setMarket('${k}')">
-        <div class="ti">${m.name}</div><div class="td">${m.universe} · ${m.frame}</div>
+        <div class="ti">${esc(m.name)} ${k.startsWith('custom_')?'<span class="pill" style="background:rgba(79,179,165,.15);color:var(--teal)">LOCAL MODEL</span>':''}</div>
+        <div class="td">${esc(m.universe)} · ${esc(m.frame)}</div>
       </button>`).join('')}</div>
   </div>
+
+  <div class="card llm" id="llmcard">${llmPanel()}</div>
 
   <div class="card">
     <div class="lbl">Segments in scope — click to include or exclude</div>
@@ -634,7 +837,44 @@ function view2(){
     <button class="btn sec" onclick="goto(1)">Back</button>
   </div>`;
 }
-function setMarket(k){ S.market=k; S.segsOn=[true,true,true,true,true]; S.result=null; render(); }
+function llmPanel(){
+  const L = S.llm;
+  const st = {ok:['led ok','Connected'], down:['led bad','Not reachable'], nomodels:['led bad','No models installed'],
+              probing:['led wait','Connecting…'], unknown:['led wait','Not checked yet']}[L.status];
+  const ready = L.status==='ok' && !L.busy;
+  const editing = L.mode==='edit';
+  return `
+    <div class="lbl" style="color:var(--teal)">Local model — generate or edit a population</div>
+    <div class="conn">
+      <span class="${st[0]}"></span><span>${st[1]}</span>
+      ${L.status==='ok'?`<span style="color:var(--faint)">· ${esc(L.model)}</span>`:''}
+      <button class="btn sec" style="padding:4px 10px;font-size:11px;margin-left:auto" onclick="llmProbe()">Reconnect</button>
+    </div>
+    <div class="fld"><label>Endpoint</label>
+      <input value="${esc(L.endpoint)}" oninput="S.llm.endpoint=this.value" placeholder="http://127.0.0.1:11434" /></div>
+    <div class="fld"><label>Model</label>
+      ${L.models.length
+        ? `<select onchange="S.llm.model=this.value">${L.models.map(m=>`<option ${m===L.model?'selected':''}>${esc(m)}</option>`).join('')}</select>`
+        : `<input value="${esc(L.model)}" oninput="S.llm.model=this.value" placeholder="no models found — run: ollama pull qwen2.5:14b" />`}
+    </div>
+    <div class="modes" style="margin-top:14px">
+      <button class="mode ${!editing?'on':''}" onclick="S.llm.mode='new';renderLLM()">Generate new</button>
+      <button class="mode ${editing?'on':''}" onclick="S.llm.mode='edit';renderLLM()">Edit current</button>
+    </div>
+    <textarea class="q" style="font-size:14px;min-height:56px" oninput="S.llm.prompt=this.value"
+      placeholder="${editing
+        ? 'e.g. split the price-sensitive segment into renters and owners, and lower willingness to pay by a third'
+        : 'e.g. UK small-scale organic farmers deciding whether to install solar'}">${esc(L.prompt)}</textarea>
+    <div class="actions" style="margin-top:14px">
+      <button class="btn" onclick="llmGenerate()" ${ready?'':'disabled'}>
+        ${L.busy?'Working…':editing?'Apply the edit →':'Generate population →'}</button>
+      <span class="hint">${editing?`Rewrites <b>${esc(MARKETS[S.market].name)}</b> into a new population. The original is untouched.`
+        :'Runs entirely on your machine. Nothing is sent anywhere.'}</span>
+    </div>
+    <div class="llmlog" id="llmlog">${L.log.join('<br>')||'Waiting.'}</div>`;
+}
+function renderLLM(){ const el=$('#llmcard'); if(el) el.innerHTML = llmPanel(); }
+function setMarket(k){ S.market=k; S.segsOn=allOn(k); S.result=null; render(); }
 function toggleSeg(i){
   if(S.segsOn[i] && S.segsOn.filter(Boolean).length<=1) return;
   S.segsOn[i]=!S.segsOn[i]; S.result=null; render();
