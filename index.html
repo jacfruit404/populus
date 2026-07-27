@@ -1011,9 +1011,17 @@ function view4(){
   // confidence badge must speak revenue, not the buy rate that sits beside them.
   const isPricing = !!R.second;
   const revGap = isPricing ? R.second.vals[w] - R.second.vals[R.run] : 0;
-  const conf = isPricing
-    ? (Math.abs(revGap) <= 4 ? 'Directional' : Math.abs(revGap) < 12 ? 'Moderate' : 'High')
-    : (ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional');
+  // Confidence = how far the lead sits beyond the noise, on the metric the
+  // decision is made on (revenue for pricing, buy rate otherwise). Expressed as
+  // a percent and a bar, and it can never read "High" on a tie — the old badge
+  // read the interval width alone, so a dead-heat could show "High".
+  const snr = isPricing ? Math.abs(revGap)/20 : gap/((R.ci[w]+R.ci[R.run])||1e-6);
+  const confPct = Math.round(clamp(100*(1-Math.exp(-2.2*Math.max(snr,0))), 2, 99));
+  const conf = (!R.tie && confPct>=80) ? 'High' : (!R.tie && confPct>=55) ? 'Moderate' : 'Low';
+  const confColor = conf==='High' ? 'var(--teal)' : conf==='Moderate' ? 'var(--gold2)' : 'var(--red)';
+  const confMsg = R.tie ? 'inside the noise — not a real lead'
+    : confPct>=80 ? (isPricing?'revenue lead clears the noise':'lead clears the interval')
+    : confPct>=55 ? 'a real but thin lead' : 'treat as a direction, not a number';
   const maxRate = Math.max(...R.popRate)||1;
 
   const secondBlock = R.second ? `
@@ -1065,8 +1073,11 @@ function view4(){
              <div class="k">Revenue margin over runner-up</div><div class="ci">${esc(R.opts[R.run])} · rev idx ${R.second.vals[R.run]}</div></div>`
         : `<div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
              <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>`}
-      <div class="metric"><div class="v" style="color:${conf==='High'?'var(--teal)':conf==='Moderate'?'var(--gold2)':'var(--red)'}">${conf}</div>
-        <div class="k">Confidence</div><div class="ci">${isPricing?(conf==='Directional'?'revenue lead is inside the noise':'revenue lead clears the noise'):(conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade')}</div></div>
+      <div class="metric">
+        <div class="v" style="color:${confColor}">${conf} <span style="font-size:14px;color:var(--muted);font-family:var(--mono)">${confPct}%</span></div>
+        <div class="k">Confidence</div>
+        <div style="height:4px;border-radius:2px;background:var(--line2);margin:6px 0 4px;overflow:hidden"><span style="display:block;height:100%;width:${confPct}%;background:${confColor}"></span></div>
+        <div class="ci">${confMsg}</div></div>
     </div>
   </div>
 
