@@ -435,7 +435,7 @@ let S = {
   segsOn:[true,true,true,true,true], popN:12000,
   result:null, agents:[], focusOpt:0, tab:'segments', history:[],
   seed:(Math.floor(Math.random()*4294967295)>>>0)||1,   // fresh personas each run; recorded so it still reproduces
-  loadings:{}, loadingsCache:{}, modelId:null,
+  loadings:{}, loadingsCache:{}, modelId:null, boot:null,
   horizon:3, retention:0.7,          // pricing comparison assumptions, editable on the results screen
   ledgerBacking:'unknown', ledgerEditing:null, ledgerDraft:{},
   llm:{endpoint:'http://127.0.0.1:11434', model:'', models:[], status:'unknown', busy:false,
@@ -983,6 +983,9 @@ function run(){
     if(i>=phases.length){
       await loadingsReady;
       S.result = simulate(); S.focusOpt = S.result.win; S.tab='segments';
+      // Measure uncertainty instead of asserting it: 20 independent persona
+      // draws at moderate N. Reuses the resolved loadings (no extra model calls).
+      S.boot = Engine.bootstrap(simCfg(), {replicates:20, n:1000});
       S.history.unshift({q:S.q, winLabel:S.result.opts[S.result.win], rate:S.result.popRate[S.result.win],
         snapshot:{type:S.type,market:S.market,q:S.q,opts:S.opts.slice(),segsOn:S.segsOn.slice(),popN:S.popN,result:S.result}});
       if(S.history.length>8) S.history.pop();
@@ -999,6 +1002,7 @@ function run(){
 function loadRun(i){
   const s = S.history[i].snapshot;
   Object.assign(S, {type:s.type,market:s.market,q:s.q,opts:s.opts.slice(),segsOn:s.segsOn.slice(),popN:s.popN,result:s.result,seed:s.result.seed});
+  S.boot = null;   // a stored run carries no bootstrap; the badge falls back to the closed-form
   S.focusOpt = s.result.win; S.step=4; render();
 }
 
@@ -1011,17 +1015,25 @@ function view4(){
   // confidence badge must speak revenue, not the buy rate that sits beside them.
   const isPricing = !!R.second;
   const revGap = isPricing ? R.second.vals[w] - R.second.vals[R.run] : 0;
-  // Confidence = how far the lead sits beyond the noise, on the metric the
-  // decision is made on (revenue for pricing, buy rate otherwise). Expressed as
-  // a percent and a bar, and it can never read "High" on a tie — the old badge
-  // read the interval width alone, so a dead-heat could show "High".
+  // Uncertainty is MEASURED, not asserted. The replicate bootstrap (S.boot) runs
+  // 20 independent persona draws and records how often each option wins; that
+  // win-share is the canonical confidence AND the canonical tie. The closed-form
+  // interval (with its +0.016 fudge) survives only as the per-option ± sanity
+  // number on the option rows. Historical runs loaded from history carry no
+  // bootstrap, so those fall back to the closed-form separation.
+  const boot = S.boot;
+  const winShare = boot ? boot.winShare[w] : null;
+  const tie = boot ? (boot.tie || w !== boot.topWin) : R.tie;
   const snr = isPricing ? Math.abs(revGap)/20 : gap/((R.ci[w]+R.ci[R.run])||1e-6);
-  const confPct = Math.round(clamp(100*(1-Math.exp(-2.2*Math.max(snr,0))), 2, 99));
-  const conf = (!R.tie && confPct>=80) ? 'High' : (!R.tie && confPct>=55) ? 'Moderate' : 'Low';
+  const confPct = boot ? Math.round(clamp(winShare, 0, 1)*100)
+                       : Math.round(clamp(100*(1-Math.exp(-2.2*Math.max(snr,0))), 2, 99));
+  const conf = tie ? 'Low' : confPct>=90 ? 'High' : 'Moderate';
   const confColor = conf==='High' ? 'var(--teal)' : conf==='Moderate' ? 'var(--gold2)' : 'var(--red)';
-  const confMsg = R.tie ? 'inside the noise — not a real lead'
-    : confPct>=80 ? (isPricing?'revenue lead clears the noise':'lead clears the interval')
-    : confPct>=55 ? 'a real but thin lead' : 'treat as a direction, not a number';
+  const confMsg = boot
+    ? (tie ? 'winner flips across draws — not a real lead' : confPct>=90 ? 'wins almost every draw' : 'wins most draws, not all')
+    : (tie ? 'inside the noise — not a real lead' : confPct>=80 ? (isPricing?'revenue lead clears the noise':'lead clears the interval') : 'a real but thin lead');
+  const bootNote = boot ? `<div style="margin:14px 0 0;padding-top:13px;border-top:1px solid var(--line2);font-size:12.5px;color:var(--muted);line-height:1.6">
+      Across <b style="color:var(--ink2);font-weight:400">${boot.replicates} independent draws</b> — fresh people each time — <b style="color:var(--ink2);font-weight:400">${esc(R.opts[w])}</b> wins <b style="color:${confColor};font-weight:400">${boot.wins[w]} of ${boot.replicates}</b>, ${pct(boot.dist[w].median)}% median (10th–90th ${pct(boot.dist[w].p10)}–${pct(boot.dist[w].p90)}%). Uncertainty measured, not assumed.</div>` : '';
   const maxRate = Math.max(...R.popRate)||1;
 
   const secondBlock = R.second ? `
@@ -1052,10 +1064,10 @@ function view4(){
   ${assumeNote}
 
   <div class="headline">
-    <div class="lbl" style="color:${R.tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${R.tie?'Too close to call':'Most likely to win'}</div>
-    <div class="verdict">${R.tie?`<b>${esc(R.opts[w])}</b> <span style="color:var(--muted);font-size:20px">or</span> <b>${esc(R.opts[R.run])}</b>`:`<b>${esc(R.opts[w])}</b>`}</div>
+    <div class="lbl" style="color:${tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${tie?'Too close to call':'Most likely to win'}</div>
+    <div class="verdict">${tie?`<b>${esc(R.opts[w])}</b> <span style="color:var(--muted);font-size:20px">or</span> <b>${esc(R.opts[R.run])}</b>`:`<b>${esc(R.opts[w])}</b>`}</div>
     <div style="color:var(--ink2);max-width:640px;font-size:13.5px">
-      ${R.tie
+      ${tie
         ? (isPricing
           ? `These two are inside the noise <b style="color:var(--ink2)">on revenue</b> — revenue index ${R.second.vals[w]} vs ${R.second.vals[R.run]} (the ${pct(rate)}% vs ${pct(R.popRate[R.run])}% ${T.verb} rates are a different metric). Re-drawing the sample flips the revenue order, so the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
           : `These two are inside the noise — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`)
@@ -1079,6 +1091,7 @@ function view4(){
         <div style="height:4px;border-radius:2px;background:var(--line2);margin:6px 0 4px;overflow:hidden"><span style="display:block;height:100%;width:${confPct}%;background:${confColor}"></span></div>
         <div class="ci">${confMsg}</div></div>
     </div>
+    ${bootNote}
   </div>
 
   <div class="card">
@@ -1089,7 +1102,7 @@ function view4(){
       const isw = i===w;
       return `<div class="orow">
         <div>
-          <div class="oname">${esc(o)} ${isw?`<span class="win">${R.tie?'JOINT FIRST':'PREDICTED WINNER'}</span>`:(R.tie&&i===R.run?'<span class="win">JOINT FIRST</span>':'')}</div>
+          <div class="oname">${esc(o)} ${isw?`<span class="win">${tie?'JOINT FIRST':'PREDICTED WINNER'}</span>`:(tie&&i===R.run?'<span class="win">JOINT FIRST</span>':'')}</div>
           <div class="track ${isw?'':'dim'}">
             <i style="width:${(p/maxRate*100).toFixed(1)}%"></i>
             <span class="cib" style="left:${(lo/maxRate*100).toFixed(1)}%;width:${((hi-lo)/maxRate*100).toFixed(1)}%"></span>

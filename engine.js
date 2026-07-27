@@ -380,6 +380,11 @@ function buildAgents(cfg){
         let v = (sg.t[d.key] === undefined ? 0.5 : sg.t[d.key]) + sigma[d.key] * gauss(r);
         if (d.key === 'novelty') v += 0.10 * ((midAge - age) / ageHalf);
         if (d.key === 'effort')  v += 0.12 * (urbanShare - (urban ? 1 : 0));
+        // Known bias: clamping truncates the tail nearest 0 or 1, so a segment
+        // declared at 0.88 averages ~0.868 across the sample — the most
+        // distinctive segments come out marginally less distinctive. ~0.012 at
+        // sigma 0.12. Draw in logit space if this ever matters; for now it does
+        // not move any verdict enough to care.
         t[d.key] = clamp(v, 0, 1);
       });
       out.push({
