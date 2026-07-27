@@ -38,6 +38,18 @@ function rng(seed){
 const logistic = z => 1 / (1 + Math.exp(-z));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
+// Box–Muller. The old residual, ((r()+r()+r())/3-0.5)*2.6, has sd ≈ 0.43 and is
+// hard-bounded at ±1.27; with the old het that capped any agent at ~1.6 logits
+// from its segment mean, so any segment with |z|>1.6 came out unanimous — the
+// stereotype complaint expressed as arithmetic. A real Gaussian has tails, so a
+// dissenter is always possible.
+function gauss(r){
+  let u = 0, v = 0;
+  while (u === 0) u = r();   // (0,1] so log is finite
+  while (v === 0) v = r();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
 /* ------------------------------------------------------------- dimensions */
 
 /* Six core behavioural dimensions, always present. `invert` means a high trait
@@ -152,13 +164,99 @@ function parseAgeRange(s){
 
 /* ---------------------------------------------------------------- scoring */
 
-// Each dimension is seeded independently, so adding a custom dimension to a
-// population does not perturb the values of the existing ones.
+/* The response function USED to be this hash: latent() turns the stimulus into
+   noise, so for message/product/policy the verdict was a random number behind a
+   confident UI (two paraphrases of one claim scored differently; adding a '.'
+   to the question flipped the winner). It survives only as a loud, flagged
+   fallback — never the silent default. See loadings() below. */
 function latent(text, dimList){
   const o = {};
   dimList.forEach(d => { o[d.key] = rng(h32(text + '#' + d.key))() * 2 - 1; });
   return o;
 }
+
+/* ---------------------------------------------------- stimulus loadings */
+
+/* Judging what a claim MEANS needs semantics, and that is the one thing a hash
+   cannot do. Loadings replace latent(): how strongly a specific option invokes
+   each dimension, signed, judged by a model that can read the option. The
+   engine stays pure — no fetch — so the app resolves loadings (a network call
+   per option, cached) and passes the map in via cfg.loadings. These three
+   helpers build the prompt, key the cache, and validate the reply, mirroring
+   how validateMarket handles a generated population. Everything downstream is
+   unchanged; contribs(), the WTP term, aggregation and the tie test do not
+   know or care where the numbers came from. */
+
+/* IMPORTANT: score ENGAGEMENT, not valence. The loading is "how strongly does
+   this option invoke this dimension", and contribs() alone decides whether
+   invoking it helps or hurts (via each dimension's `invert` flag and each
+   agent's trait). Telling the model about `invert` here — e.g. "a high value
+   RESISTS" — invites a valence answer instead, which contribs then flips a
+   SECOND time on inverted dimensions: a well-formed, sign-reversed vector that
+   validateLoadings can't catch. So the prompt never mentions invert, and says
+   in as many ways as possible: rate engagement, not whether people will like
+   it. */
+function loadingsPrompt(question, option, type, dimList){
+  const rows = dimList.map(d => '  "' + d.key + '": <number -1..1>   // ' + d.label).join('\n');
+  return [
+    'Score how strongly ONE option ENGAGES each behavioural dimension below.',
+    'Decision type: ' + type + '.',
+    'Question: ' + question,
+    'Option under test: ' + option,
+    '',
+    'For each dimension return a number from -1 to 1:',
+    '  +1  the option strongly invokes / leans on / activates this dimension',
+    '   0  neutral — it neither engages the dimension nor works against it',
+    '  -1  the option strongly pushes the opposite way',
+    '',
+    'Judge ONLY how much the option\'s content engages the dimension. Do NOT',
+    'predict whether people will like, trust, approve, or buy it, and do NOT',
+    'guess whether engaging the dimension helps or hurts — that is decided',
+    'elsewhere. Example: a bold clinical claim scores HIGH on a claim-scepticism',
+    'dimension because it engages scrutiny, whether or not scepticism is good.',
+    '',
+    'Return raw JSON only, one number per key, no commentary:',
+    '{', rows, '}'
+  ].join('\n');
+}
+
+// Cache key. Same question/option/type/model always resolves the same loadings,
+// so a re-run is free and a committed prediction still reproduces byte-for-byte.
+const loadingsKey = (question, option, type, model) =>
+  'L' + h32(question + '|' + option + '|' + type + '|' + (model || 'hash')).toString(36);
+
+/* Validate like validateMarket: clamp to [-1,1], default missing keys to 0,
+   report repairs — and reject an all-zeros reply, which is the loadings version
+   of a collapsed population (the option invokes nothing, so the model did not
+   read it). */
+function validateLoadings(o, dimList){
+  const fix = [], errs = [], out = {};
+  if (!o || typeof o !== 'object'){ errs.push('loadings response was not an object'); return {ok:false, errs, fix}; }
+  dimList.forEach(d => {
+    let v = Number(o[d.key]);
+    if (!isFinite(v)){ v = 0; fix.push('loading "' + d.key + '" missing, defaulted to 0'); }
+    else if (v > 1 || v < -1){ v = clamp(v, -1, 1); fix.push('loading "' + d.key + '" clamped to [-1,1]'); }
+    out[d.key] = v;
+  });
+  const mag = dimList.reduce((a, d) => a + Math.abs(out[d.key]), 0) / dimList.length;
+  if (mag < 0.04) errs.push('loadings are all ~0 — the option invokes nothing, so the model likely did not read it');
+  return {ok: errs.length === 0, loadings: out, fix, errs};
+}
+
+/* Resolve one option's loadings for a run: the model-supplied vector from
+   cfg.loadings when present, else the hash fallback with hash:true so the caller
+   can raise a loud banner (and refuse non-pricing modes) rather than pass noise
+   off as a reading. */
+function optionLoadings(cfg, opt, dimList){
+  const supplied = cfg.loadings && cfg.loadings[opt];
+  if (supplied){
+    const o = {};
+    dimList.forEach(d => { o[d.key] = clamp(Number(supplied[d.key]) || 0, -1, 1); });
+    return {load: o, hash: false};
+  }
+  return {load: latent(cfg.question + '|' + opt + '|' + cfg.type, dimList), hash: true};
+}
+
 function contribs(l, t, dimList){
   const c = {};
   dimList.forEach(d => {
@@ -173,54 +271,143 @@ function activeSegs(market, segsOn){
   const tot = list.reduce((a, b) => a + b.s, 0) || 1;
   return list.map(sg => Object.assign({}, sg, {w: sg.s / tot}));
 }
-function segZ(seg, opt, cfg, dimList){
-  const l = latent(cfg.question + '|' + opt + '|' + cfg.type, dimList);
-  const c = contribs(l, seg.t, dimList);
-  const A = dimList.reduce((a, d) => a + c[d.key], 0) / dimList.length;
+/* The core score. Given one option's loadings and ONE trait vector, return its
+   affinity and z. Called with the segment mean (for drivers and the tie
+   explanation) and, since Change 2, with each agent's own trait vector (so two
+   people in a segment genuinely differ). Pricing keeps its real WTP economics;
+   the affinity term A is the part loadings made meaningful. */
+// How hard affinity drives the verdict. Non-pricing lives or dies on this; for
+// pricing the WTP term dominates and affinity is a secondary nudge.
+const AFFINITY_SCALE = 2.60;
+const AFFINITY_SCALE_PRICING = 0.55;
+
+function zAffinity(loadObj, traits, seg, opt, cfg, dimList){
+  const c = contribs(loadObj, traits, dimList);
+  // Engagement-normalised affinity. Weight each dimension's trait-alignment by
+  // how strongly the option ENGAGES it, and divide by the TOTAL engagement — not
+  // by the dimension count. A strong signal on two dimensions must not be
+  // diluted by seven the option never touches. A stays in ~[-1,1] no matter how
+  // many dimensions exist. (Dividing by dimList.length pinned every non-pricing
+  // verdict near 52%: each added dimension shrank A toward zero, so the engine
+  // could not separate an 88/12 split from a coin flip.)
+  let mag = 0; dimList.forEach(d => { mag += Math.abs(loadObj[d.key]); });
+  const A = mag > 1e-6 ? dimList.reduce((a, d) => a + c[d.key], 0) / mag : 0;
   let z, wtpTerm = 0;
   if (cfg.type === 'pricing'){
     // annualised for monthly, then discounted for retention: the flexibility of
     // a monthly plan makes it an easier yes than its full annual value implies
     const p = decisionPrice(opt, retentionOf(cfg));
     wtpTerm = p === null ? 0 : (seg.wtp - p) / (0.62 * seg.sd);
-    z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + 0.90 * A;
+    z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + AFFINITY_SCALE_PRICING * A;
   } else {
-    z = 0.10 + 2.30 * A;
+    z = 0.10 + AFFINITY_SCALE * A;
   }
   return {z, c, wtpTerm, A};
+}
+// Segment-level score, on the segment mean traits. Loadings come from the model
+// (cfg.loadings) when present, hash fallback otherwise.
+function segZ(seg, opt, cfg, dimList){
+  return zAffinity(optionLoadings(cfg, opt, dimList).load, seg.t, seg, opt, cfg, dimList);
 }
 
 /* ----------------------------------------------------------------- agents */
 
 const AGENTS_SHOWN = 260;
+const DEFAULT_SIGMA = 0.12;   // per-dimension within-segment trait spread
+// Unmodeled variation splits in two. An agent-level propensity is shared across
+// every option — some people just say yes to more things. An option-specific
+// taste is drawn afresh for each (agent, option) — idiosyncratic liking the
+// traits don't capture. Without the second term the shared residual dominates
+// the small between-option differences and every agent votes the same way on
+// everything: all-yes or all-no. The option term lets an agent like one option
+// and reject another.
+const DEFAULT_RESID = 0.80;     // agent-level propensity, shared across options
+const DEFAULT_OPT_SIGMA = 1.00; // option-specific taste, per (agent, option)
+
+/* Per-dimension trait spread. A population may declare its own (a number for
+   all dimensions, or an object keyed by dimension); otherwise it is modest but
+   non-zero, so a segment is a cloud, not a point. */
+function sigmaFor(market, dimList){
+  const s = market && market.sigma, out = {};
+  dimList.forEach(d => {
+    let v = DEFAULT_SIGMA;
+    if (typeof s === 'number') v = s;
+    else if (s && typeof s === 'object' && isFinite(Number(s[d.key]))) v = Number(s[d.key]);
+    out[d.key] = clamp(v, 0, 0.5);
+  });
+  return out;
+}
+
+/* Names drawn without replacement within a run. The old code drew each name
+   independently, so at N=260 on a 16×12 pool users saw five "Erin Calloway"s
+   and read it as the model repeating itself. Shuffle the full combination pool
+   with a run-level stream (same seed → same names) and assign in order; only if
+   the pool is smaller than the run do names repeat. */
+function uniqueNames(market, marketKey, seed, need){
+  const f = (market.names && market.names.f) || [], l = (market.names && market.names.l) || [];
+  const combos = [];
+  for (let i = 0; i < f.length; i++) for (let j = 0; j < l.length; j++) combos.push(f[i] + ' ' + l[j]);
+  if (!combos.length) return [];
+  const r = rng(h32(marketKey + '|names|s' + seed));
+  for (let i = combos.length - 1; i > 0; i--){ const k = Math.floor(r() * (i + 1)); const t = combos[i]; combos[i] = combos[k]; combos[k] = t; }
+  const out = [];
+  for (let x = 0; x < need; x++) out.push(combos[x % combos.length]);
+  return out;
+}
 
 function buildAgents(cfg){
   const market = cfg.markets[cfg.marketKey];
+  const dimList = dims(market);
   const segs = activeSegs(market, cfg.segsOn);
   const shown = cfg.agentsShown || AGENTS_SHOWN;
+  const sigma = sigmaFor(market, dimList);
+  const resid = isFinite(Number(cfg.residualSigma)) ? Number(cfg.residualSigma) : DEFAULT_RESID;
+
+  // Counts first, so names can be drawn without replacement across the whole run.
+  const counts = segs.map(sg => Math.max(4, Math.round(sg.w * shown)));
+  const total = counts.reduce((a, b) => a + b, 0);
+  const names = uniqueNames(market, cfg.marketKey, cfg.seed, total);
+
   const out = [];
   let id = 0;
-  segs.forEach(sg => {
-    const count = Math.max(4, Math.round(sg.w * shown));
+  segs.forEach((sg, si) => {
+    const count = counts[si];
     const range = parseAgeRange(sg.age);
-    const ageLo = range[0], ageHi = range[1];
+    const ageLo = range[0], ageHi = Math.max(range[1], ageLo + 1);
+    const midAge = (ageLo + ageHi) / 2, ageHalf = Math.max(1, (ageHi - ageLo) / 2);
     const urbanShare = sg.urban === undefined ? 0.62 : sg.urban;
     for (let k = 0; k < count; k++){
       // The seed controls WHICH agents are drawn, not how the population
       // behaves. Same seed -> same sample. New seed -> a fresh draw.
       const r = rng(h32(cfg.marketKey + '|' + sg.n + '|' + k + '|s' + cfg.seed));
-      const n = ((r() + r() + r()) / 3 - 0.5) * 2.6;      // ~N(0,1)-ish, bounded
-      const fn = market.names.f[Math.floor(r() * market.names.f.length)];
-      const ln = market.names.l[Math.floor(r() * market.names.l.length)];
+      const age = ageLo + Math.floor(r() * (ageHi - ageLo + 1));
+      const urban = r() < urbanShare;
+      /* Each agent is a POINT in trait space, not the segment shifted along one
+         axis: segment mean + Gaussian spread + demographic nudges that make the
+         fields we already carry load-bearing. Nudges are centred within the
+         segment (younger → more novel; more-urban → less switching effort), so
+         the segment mean still reproduces. Income and geo are segment-level and
+         already sit in the segment's own traits, so they are not re-applied. */
+      const t = {};
+      dimList.forEach(d => {
+        let v = (sg.t[d.key] === undefined ? 0.5 : sg.t[d.key]) + sigma[d.key] * gauss(r);
+        if (d.key === 'novelty') v += 0.10 * ((midAge - age) / ageHalf);
+        if (d.key === 'effort')  v += 0.12 * (urbanShare - (urban ? 1 : 0));
+        // Known bias: clamping truncates the tail nearest 0 or 1, so a segment
+        // declared at 0.88 averages ~0.868 across the sample — the most
+        // distinctive segments come out marginally less distinctive. ~0.012 at
+        // sigma 0.12. Draw in logit space if this ever matters; for now it does
+        // not move any verdict enough to care.
+        t[d.key] = clamp(v, 0, 1);
+      });
       out.push({
-        id: id++, seg: sg.i, segRef: sg, n, u: r(),
-        name: fn + ' ' + ln,
-        age: ageLo + Math.floor(r() * (Math.max(ageHi, ageLo) - ageLo + 1)),
-        urban: r() < urbanShare,
-        geo: sg.geo || '', income: sg.income || '',
+        id: id, seg: sg.i, segRef: sg, t, resid: resid * gauss(r), u: r(),
+        name: names[id] || (sg.n + ' #' + k),
+        age, urban, geo: sg.geo || '', income: sg.income || '',
         ctx: market.ctx[Math.floor(r() * market.ctx.length)],
         qi: Math.floor(r() * 2)
       });
+      id++;
     }
   });
   return out;
@@ -235,12 +422,34 @@ function simulate(cfg){
   const segs = activeSegs(market, cfg.segsOn);
   const agents = buildAgents(cfg);
   const opts = cfg.opts.filter(o => String(o).trim());
-  const zmap = {};
-  segs.forEach(sg => { zmap[sg.i] = opts.map(o => segZ(sg, o, cfg, dimList)); });
 
-  const het = cfg.type === 'pricing' ? 1.60 : 1.25;   // within-segment heterogeneity
+  // Option loadings: real semantics from the model (cfg.loadings), or the hash
+  // fallback — flagged, never silent — when none were supplied.
+  const optLoad = opts.map(o => optionLoadings(cfg, o, dimList));
+  const hashFallback = optLoad.some(x => x.hash);
+
+  // Segment-level scores, on the segment mean, drive the decomposition and the
+  // tie explanation.
+  const zmap = {};
+  segs.forEach(sg => { zmap[sg.i] = opts.map((o, oi) => zAffinity(optLoad[oi].load, sg.t, sg, o, cfg, dimList)); });
+
+  // Each agent votes on its OWN trait vector plus a real-Gaussian residual, so a
+  // segment is a distribution of verdicts rather than one verdict cloned N times.
   agents.forEach(a => {
-    a.p = opts.map((o, oi) => logistic(zmap[a.seg][oi].z + het * a.n));
+    const seg = a.segRef;
+    const za = opts.map((o, oi) => zAffinity(optLoad[oi].load, a.t, seg, o, cfg, dimList));
+    // agent-level propensity (a.resid, shared) + option-specific taste (its own
+    // seeded draw per option) so an agent can say yes to one option and no to
+    // another instead of voting the same way on all of them
+    a.p = za.map((x, oi) => logistic(
+      x.z + a.resid + DEFAULT_OPT_SIGMA * gauss(rng(h32(cfg.marketKey + '|oj|' + a.id + '|' + oi + '|s' + cfg.seed)))));
+    // the dimension that moved THIS agent most for each option — lets a verbatim
+    // be matched to why this specific person decided as they did (Change 3)
+    a.drivers = za.map(x => {
+      let best = dimList[0].key, bv = -1;
+      dimList.forEach(d => { const av = Math.abs(x.c[d.key]); if (av > bv){ bv = av; best = d.key; } });
+      return best;
+    });
     // Structural floor and ceiling: some agents are outside the category
     // entirely, a few act regardless. Nothing ever reaches 0% or 100%.
     a.out = a.u < 0.038;
@@ -315,13 +524,110 @@ function simulate(cfg){
   });
 
   return {opts, segs, segRates, popRate, ci, second, win, run, rank, drivers,
-          agents, spread, splitSeg, tie, billing, assumptions,
+          agents, spread, splitSeg, tie, billing, assumptions, hashFallback,
           n: cfg.popN, seed: cfg.seed, ts: new Date()};
 }
 
 function quoteFor(agent, oi, opts){
   const bank = agent.yes[oi] ? agent.segRef.pos : agent.segRef.neg;
   return bank[agent.qi % bank.length].replace(/\{O\}/g, opts[oi]);
+}
+
+/* Trait-matched verbatim. The old path indexed a two-item bank by qi ∈ {0,1},
+   so 260 agents produced at most four sentences per segment. A per-segment bank
+   of ~20-30 quotes, each tagged with the dimension that drives it, lets each
+   agent draw the quote whose driver matches its OWN largest contribution, with
+   valence matching its verdict — variety from 4 to ~30, and the quote now
+   reflects why this specific agent decided as it did. Falls back to the pos/neg
+   pair when a population has no richer bank. Keeps the {O} substitution. */
+function pickQuote(agent, oi, opts){
+  const bank = agent.segRef && agent.segRef.bank;
+  if (!Array.isArray(bank) || !bank.length) return quoteFor(agent, oi, opts);
+  const valence = agent.yes[oi] ? 'pos' : 'neg';
+  const driver = agent.drivers ? agent.drivers[oi] : null;
+  const byValence = bank.filter(q => q.valence === valence);
+  const pool = byValence.length ? byValence : bank;
+  const matched = pool.filter(q => q.driver === driver);
+  const choose = matched.length ? matched : pool;
+  const r = rng(h32('q|' + agent.id + '|' + oi + '|' + (agent.qi || 0)));   // seeded tie-break
+  const q = choose[Math.floor(r() * choose.length)];
+  return String(q.text).replace(/\{O\}/g, opts[oi]);
+}
+
+/* The bank pickQuote draws from is generated once per segment per run (~6 model
+   calls, not 260): 24 tagged first-person reactions. bankPrompt builds the ask;
+   validateBank cleans the reply the way validateMarket cleans a population —
+   every quote must carry the {O} token (a reaction that never names the option
+   is not a reaction to it), a valence, and a driver that is a real dimension. */
+function bankPrompt(question, opts, seg, dimList){
+  const dims = dimList.map(d => d.key + ' (' + d.label + ')').join(', ');
+  return [
+    'Write short first-person reactions from ONE customer segment to the option in a decision.',
+    'Question: ' + question,
+    'Options being tested: ' + (opts || []).join(' | '),
+    'Segment: ' + (seg.n || 'segment') + ' — ' + (seg.b || ''),
+    '',
+    'Produce 24 quotes this segment might say. Each quote:',
+    '  - one sentence, first person, specific, no marketing voice',
+    '  - contains the literal token {O} where the option would appear',
+    '  - tagged with the ONE dimension that drives it (driver) and whether it is',
+    '    positive or negative toward the option (valence: "pos" or "neg").',
+    'Dimension keys: ' + dims + '.',
+    'Cover a spread of dimensions and both valences.',
+    '',
+    'Return raw JSON only: {"bank":[{"driver":"...","valence":"pos","text":"... {O} ..."}]}'
+  ].join('\n');
+}
+function validateBank(arr, dimList){
+  if (!Array.isArray(arr)) return [];
+  const keys = {}; dimList.forEach(d => { keys[d.key] = 1; });
+  const out = [];
+  arr.forEach(q => {
+    if (!q || typeof q.text !== 'string') return;
+    const text = q.text.trim();
+    if (text.indexOf('{O}') < 0 || text.length < 8) return;      // must reference the option
+    out.push({
+      driver: keys[q.driver] ? q.driver : dimList[0].key,        // unknown driver → first dim (still valence-usable)
+      valence: q.valence === 'neg' ? 'neg' : 'pos',
+      text: text.slice(0, 180)
+    });
+  });
+  return out.slice(0, 40);
+}
+
+/* Replicate bootstrap. popN was user-set but only ~260 agents were ever drawn,
+   so the closed-form interval described a sample never taken, and its +0.016
+   fudge was far too small for a model with a dozen hand-tuned constants. Measure
+   the uncertainty instead: run many independent persona draws at moderate N and
+   report the spread of what actually varies — which people you got. Prefer many
+   moderate draws over one large one; between-draw variance is the signal, and a
+   single huge population averages it away. */
+function bootstrap(cfg, opt){
+  opt = opt || {};
+  const reps = opt.replicates || 20;
+  const n = opt.n || 1000;
+  const base = cfg.seed || 1;
+  const O = cfg.opts.filter(o => String(o).trim()).length;
+  const wins = new Array(O).fill(0), byOpt = Array.from({length: O}, () => []);
+  let primary = null;
+  for (let i = 0; i < reps; i++){
+    const seed = h32('rep|' + base + '|' + i) >>> 0;   // an independent persona draw
+    const r = simulate(Object.assign({}, cfg, {seed, agentsShown: n, popN: n}));
+    if (i === 0) primary = r;                            // interview only this one
+    wins[r.win]++;
+    r.popRate.forEach((p, oi) => byOpt[oi].push(p));
+  }
+  const q = (xs, f) => { const s = xs.slice().sort((a, b) => a - b); return s[clamp(Math.floor(f * s.length), 0, s.length - 1)]; };
+  const dist = byOpt.map(xs => ({
+    median: q(xs, 0.5), p10: q(xs, 0.10), p90: q(xs, 0.90),
+    mean: xs.reduce((a, b) => a + b, 0) / xs.length
+  }));
+  const winShare = wins.map(w => w / reps);
+  const topWin = winShare.indexOf(Math.max.apply(null, winShare));
+  // A win-share threshold replaces the interval comparison: if the leader does
+  // not take a clear majority of independent draws, the answer is unstable.
+  const tie = O > 1 && winShare[topWin] < 0.70;
+  return {replicates: reps, n, wins, winShare, dist, topWin, tie, primary};
 }
 
 /* ------------------------------------------------- model output handling */
@@ -521,11 +827,13 @@ function parseOutcome(entered){
 }
 
 return {
-  h32, rng, logistic, clamp,
+  h32, rng, logistic, clamp, gauss,
   CORE_DIMS, TRAIT_KEYS, DIMLBL, dimLabel, dims,
   parsePrice, parseBillingUnit, normalizedPrice, billingReport,
   decisionPrice, revenueOverHorizon, parseAgeRange,
-  latent, contribs, activeSegs, segZ, buildAgents, simulate, quoteFor,
+  latent, loadingsPrompt, loadingsKey, validateLoadings, optionLoadings,
+  contribs, activeSegs, zAffinity, segZ, sigmaFor, uniqueNames,
+  buildAgents, simulate, bootstrap, quoteFor, pickQuote, bankPrompt, validateBank,
   extractJSON, validateMarket, completenessGaps, coherenceWarning,
   ledgerStats, parseOutcome,
   AGENTS_SHOWN
