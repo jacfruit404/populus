@@ -187,18 +187,33 @@ function latent(text, dimList){
    unchanged; contribs(), the WTP term, aggregation and the tie test do not
    know or care where the numbers came from. */
 
+/* IMPORTANT: score ENGAGEMENT, not valence. The loading is "how strongly does
+   this option invoke this dimension", and contribs() alone decides whether
+   invoking it helps or hurts (via each dimension's `invert` flag and each
+   agent's trait). Telling the model about `invert` here — e.g. "a high value
+   RESISTS" — invites a valence answer instead, which contribs then flips a
+   SECOND time on inverted dimensions: a well-formed, sign-reversed vector that
+   validateLoadings can't catch. So the prompt never mentions invert, and says
+   in as many ways as possible: rate engagement, not whether people will like
+   it. */
 function loadingsPrompt(question, option, type, dimList){
-  const rows = dimList.map(d =>
-    '  "' + d.key + '": <number -1..1>   // ' + d.label + (d.invert ? ' — a HIGH value RESISTS the option' : '')).join('\n');
+  const rows = dimList.map(d => '  "' + d.key + '": <number -1..1>   // ' + d.label).join('\n');
   return [
-    'You are scoring one option on how strongly it invokes each behavioural dimension.',
+    'Score how strongly ONE option ENGAGES each behavioural dimension below.',
     'Decision type: ' + type + '.',
     'Question: ' + question,
     'Option under test: ' + option,
     '',
-    'For THIS option, return a value from -1 to 1 per dimension: positive if the',
-    'option leans on or appeals to that dimension, negative if it works against',
-    'it, 0 if neutral. Judge the option\'s actual content, not whether it is wise.',
+    'For each dimension return a number from -1 to 1:',
+    '  +1  the option strongly invokes / leans on / activates this dimension',
+    '   0  neutral — it neither engages the dimension nor works against it',
+    '  -1  the option strongly pushes the opposite way',
+    '',
+    'Judge ONLY how much the option\'s content engages the dimension. Do NOT',
+    'predict whether people will like, trust, approve, or buy it, and do NOT',
+    'guess whether engaging the dimension helps or hurts — that is decided',
+    'elsewhere. Example: a bold clinical claim scores HIGH on a claim-scepticism',
+    'dimension because it engages scrutiny, whether or not scepticism is good.',
     '',
     'Return raw JSON only, one number per key, no commentary:',
     '{', rows, '}'

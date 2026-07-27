@@ -261,6 +261,17 @@ function run(){
   const dl6 = E.dims(market());
   const fullLoad = {}; dl6.forEach(d => { fullLoad[d.key] = 0.3; });
   ok(E.validateLoadings(fullLoad, dl6).ok, 'a complete loadings vector validates');
+
+  // The prompt must ask for ENGAGEMENT, not valence, and must never leak the
+  // `invert` flag — telling the model "a high value resists" makes it return
+  // sign-flipped loadings that contribs() double-flips and validateLoadings
+  // cannot catch (a well-formed but wrong vector).
+  const withInvert = market(); withInvert.traits = [{key:'health', label:'Health', invert:true}];
+  const prompt = E.loadingsPrompt('Which claim?', 'Clinically proven', 'message', E.dims(withInvert));
+  ok(!/resist/i.test(prompt) && !/invert/i.test(prompt),
+     'the loadings prompt never mentions invert/resist — that caused silent sign inversion');
+  ok(/engage/i.test(prompt) && /\bdo not\b/i.test(prompt) && /(like|approve|buy)/i.test(prompt),
+     'the prompt frames loadings as engagement and forbids predicting whether people will like it');
   const clamped = E.validateLoadings(Object.assign({}, fullLoad, {price: 5, novelty: -9}), dl6);
   ok(clamped.loadings.price === 1 && clamped.loadings.novelty === -1 && clamped.fix.length >= 2,
      'out-of-range loadings are clamped to [-1,1] and every repair reported');
