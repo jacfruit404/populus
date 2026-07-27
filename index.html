@@ -439,7 +439,12 @@ let S = {
   horizon:3, retention:0.7,          // pricing comparison assumptions, editable on the results screen
   ledgerBacking:'unknown', ledgerEditing:null, ledgerDraft:{},
   llm:{endpoint:'http://127.0.0.1:11434', model:'', models:[], status:'unknown', busy:false,
-       mode:'new', prompt:'', log:[]}
+       mode:'new', prompt:'', log:[],
+       // Bring-your-own-key: a visitor's own Anthropic key, kept in this browser
+       // session only (sessionStorage), sent straight to Anthropic, never stored
+       // on a server. Lets the shared link run the model with no backend.
+       key: (()=>{ try{ return sessionStorage.getItem('populus.anthropicKey')||''; }catch(e){ return ''; } })(),
+       hostedModel: (()=>{ try{ return sessionStorage.getItem('populus.hostedModel')||'claude-opus-5'; }catch(e){ return 'claude-opus-5'; } })()}
 };
 // segment toggles must track the market's actual segment count, not a fixed 5
 const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
@@ -580,21 +585,55 @@ async function llmChat(system, user){
 const marketJSON = m => JSON.stringify({name:m.name,universe:m.universe,frame:m.frame,unit:m.unit,
   cur:m.cur,ctx:m.ctx,names:m.names,traits:m.traits||[],segs:m.segs},null,1);
 
-/* One chat turn, wherever a model is. Prefer the hosted proxy (/api/llm — the
-   key stays server-side); fall back to a local Ollama if the proxy is not
-   configured. Throws if neither is available, so the caller degrades to the
-   hash and flags it. */
-async function modelCall(system, user){
+/* Call Anthropic directly from the browser with the visitor's own key
+   (bring-your-own-key). Anthropic permits this with the browser-access header,
+   so it needs no backend and works on the shared link. The key only ever leaves
+   the browser to reach Anthropic. */
+async function anthropicDirect(system, user, maxTokens){
+  const key = (S.llm.key||'').trim();
+  const model = S.llm.hostedModel || 'claude-opus-5';
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method:'POST',
+    headers:{'x-api-key':key, 'anthropic-version':'2023-06-01',
+             'anthropic-dangerous-direct-browser-access':'true', 'content-type':'application/json'},
+    body: JSON.stringify({model, max_tokens:maxTokens, thinking:{type:'disabled'},
+                          system, messages:[{role:'user', content:user}]})
+  });
+  if(!r.ok){ const t = await r.text().catch(()=> ''); throw new Error('Anthropic '+r.status+(t?': '+t.slice(0,180):'')); }
+  const j = await r.json();
+  if(j.stop_reason==='refusal') throw new Error('the model declined this request');
+  const block = (j.content||[]).find(b=>b.type==='text');
+  if(!block) throw new Error('no text in the model response');
+  S.modelId = model;
+  return block.text;
+}
+
+/* One chat turn, wherever a model is. Order: the visitor's own key (works on
+   the shared link, no backend), then the local proxy (serve.py with a
+   server-side key), then a local Ollama. Throws if none is available, so the
+   caller degrades to the flagged hash. */
+async function modelCall(system, user, maxTokens){
+  maxTokens = maxTokens || 1024;
+  if((S.llm.key||'').trim()) return anthropicDirect(system, user, maxTokens);
   try{
     const r = await fetch('/api/llm', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({system, prompt:user, max_tokens:1024})});
+      body: JSON.stringify({system, prompt:user, max_tokens:maxTokens})});
     if(r.ok){ const j = await r.json(); if(j.ok && j.text){ S.modelId = j.model || 'hosted'; return j.text; } }
     // 503 = proxy present but no key; anything else = fall through to Ollama
   }catch(e){/* proxy unreachable; try the local model */}
   if(S.llm.status==='ok'){ S.modelId = S.llm.model; return llmChat(system, user); }
   throw new Error('no model available');
 }
-const anyModel = () => !!S.modelId || S.llm.status==='ok';
+const anyModel = () => !!(S.llm.key||'').trim() || !!S.modelId || S.llm.status==='ok';
+
+// Persist / clear the visitor's key in this browser session only.
+function saveHostedKey(){
+  const k = (S.llm.key||'').trim();
+  try{ if(k) sessionStorage.setItem('populus.anthropicKey', k); else sessionStorage.removeItem('populus.anthropicKey'); }catch(e){}
+  renderLLM();
+}
+function saveHostedModel(){ try{ sessionStorage.setItem('populus.hostedModel', S.llm.hostedModel||'claude-opus-5'); }catch(e){} }
+function forgetHostedKey(){ S.llm.key=''; try{ sessionStorage.removeItem('populus.anthropicKey'); }catch(e){} renderLLM(); }
 
 /* Stimulus loadings (Change 1). For each option, ask the model how strongly it
    invokes each dimension; validate and cache. Any option left unresolved falls
@@ -623,10 +662,10 @@ async function resolveLoadings(){
 const randomSeed = () => (Math.floor(Math.random() * 4294967295) >>> 0) || 1;
 
 async function llmEnrich(market, brief, gaps){
-  const raw = await llmChat(SCHEMA_PROMPT,
+  const raw = await modelCall(SCHEMA_PROMPT,
     `You produced this population:\n\n${marketJSON(market)}\n\nIt is missing required detail. Return the SAME population with the following added. `+
     `Keep every existing segment name, share, quote and trait value exactly as they are — add only what is listed:\n- ${gaps.join('\n- ')}\n\n`+
-    `The original brief was: ${brief}`);
+    `The original brief was: ${brief}`, 4096);
   return validateMarket(extractJSON(raw));
 }
 
@@ -634,7 +673,7 @@ async function llmGenerate(){
   if(S.llm.busy) return;
   const p = S.llm.prompt.trim();
   if(!p){ llmLog('Describe the population first.','warn'); return; }
-  if(S.llm.status!=='ok'){ llmLog('No model connected.','err'); return; }
+  if(S.llm.status!=='ok' && !(S.llm.key||'').trim()){ llmLog('No model connected — paste an Anthropic key above, or connect a local Ollama.','err'); return; }
   S.llm.busy=true; renderLLM();
   const editing = S.llm.mode==='edit';
   const cur = MARKETS[S.market];
@@ -642,9 +681,9 @@ async function llmGenerate(){
     ? `Here is an existing population:\n\n${marketJSON(cur)}\n\nApply this change and return the FULL modified object in the same schema:\n${p}`
     : `Design a population for: ${p}`;
   try{
-    llmLog(`${editing?'Editing':'Generating'} with ${S.llm.model}…`);
+    llmLog(`${editing?'Editing':'Generating'} with ${(S.llm.key||'').trim()?S.llm.hostedModel:S.llm.model}…`);
     const t0 = performance.now();
-    const raw = await llmChat(SCHEMA_PROMPT, user);
+    const raw = await modelCall(SCHEMA_PROMPT, user, 4096);
     llmLog(`Response in ${((performance.now()-t0)/1000).toFixed(1)}s, ${raw.length} chars.`);
     const obj = extractJSON(raw);
     let v = validateMarket(obj);
@@ -836,10 +875,27 @@ function llmPanel(){
   const L = S.llm;
   const st = {ok:['led ok','Connected'], down:['led bad','Not reachable'], nomodels:['led bad','No models installed'],
               probing:['led wait','Connecting…'], unknown:['led wait','Not checked yet']}[L.status];
-  const ready = L.status==='ok' && !L.busy;
+  const ready = (L.status==='ok' || (L.key||'').trim()) && !L.busy;
   const editing = L.mode==='edit';
+  const hasKey = (L.key||'').trim();
   return `
-    <div class="lbl" style="color:var(--teal)">Local model — generate or edit a population</div>
+    <div class="lbl" style="color:var(--teal)">Model — powers populations and the message / product / policy verdict</div>
+    <div style="margin:8px 0 14px;padding:11px 13px;border:1px solid var(--line);border-radius:8px">
+      <div style="font-size:12px;color:var(--ink2);line-height:1.5;margin-bottom:9px">Paste your Anthropic API key to run this on a hosted model — without one, message / product / policy verdicts fall back to a hash.</div>
+      <div class="fld"><label>Anthropic API key</label>
+        <input type="password" value="${esc(L.key||'')}" oninput="S.llm.key=this.value" onchange="saveHostedKey()"
+          placeholder="sk-ant-…" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px" /></div>
+      <div class="fld"><label>Model</label>
+        <select onchange="S.llm.hostedModel=this.value;saveHostedModel()">
+          ${['claude-opus-5','claude-sonnet-5','claude-haiku-4-5'].map(m=>`<option ${m===(L.hostedModel||'claude-opus-5')?'selected':''}>${m}</option>`).join('')}
+        </select></div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:2px">
+        <span style="font-size:11px;color:${hasKey?'var(--teal)':'var(--faint)'}">${hasKey?'● key set — this browser session only':'no key set'}</span>
+        ${hasKey?`<button class="btn sec" style="padding:3px 9px;font-size:11px;margin-left:auto" onclick="forgetHostedKey()">Forget key</button>`:''}
+      </div>
+      <div style="font-size:11px;color:var(--faint);line-height:1.5;margin-top:9px">Sent from your browser straight to Anthropic for your own requests — not stored on any server, not logged, cleared when you close the tab. <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" style="color:var(--muted)">Get a key ↗</a></div>
+    </div>
+    <div class="lbl" style="color:var(--faint);font-size:11px;margin-bottom:8px">…or a local model (Ollama)</div>
     <div class="conn">
       <span class="${st[0]}"></span><span>${st[1]}</span>
       ${L.status==='ok'?`<span style="color:var(--faint)">· ${esc(L.model)}</span>`:''}
@@ -866,7 +922,7 @@ function llmPanel(){
       <button class="btn" onclick="llmGenerate()" ${ready?'':'disabled'}>
         ${L.busy?'Working…':editing?'Apply the edit →':'Generate population →'}</button>
       <span class="hint">${editing?`Rewrites <b>${esc(MARKETS[S.market].name)}</b> into a new population. The original is untouched.`
-        :'Runs entirely on your machine. Nothing is sent anywhere.'}</span>
+        :(hasKey?'Uses your Anthropic key — sent only to Anthropic.':'Runs on your local model. Nothing leaves your machine.')}</span>
     </div>
     <div class="llmlog" id="llmlog">${L.log.join('<br>')||'Waiting.'}</div>`;
 }
@@ -1247,7 +1303,7 @@ function showAgent(id){
       <div class="kv">${traits}</div>
       <div class="lbl">Response to each option</div>
       ${resp}
-      <div class="note">Idiosyncratic offset ${a.n>=0?'+':''}${a.n.toFixed(2)}σ from the ${a.segRef.n} mean. Grounded in ${M.frame.toLowerCase()}</div>
+      <div class="note">Idiosyncratic offset ${a.resid>=0?'+':''}${a.resid.toFixed(2)} logits from the ${a.segRef.n} mean. Grounded in ${M.frame.toLowerCase()}</div>
     </div>
   </div>`;
 }
