@@ -286,7 +286,15 @@ function segZ(seg, opt, cfg, dimList){
 
 const AGENTS_SHOWN = 260;
 const DEFAULT_SIGMA = 0.12;   // per-dimension within-segment trait spread
-const DEFAULT_RESID = 1.20;   // residual logits, for everything left unmodeled
+// Unmodeled variation splits in two. An agent-level propensity is shared across
+// every option — some people just say yes to more things. An option-specific
+// taste is drawn afresh for each (agent, option) — idiosyncratic liking the
+// traits don't capture. Without the second term the shared residual dominates
+// the small between-option differences and every agent votes the same way on
+// everything: all-yes or all-no. The option term lets an agent like one option
+// and reject another.
+const DEFAULT_RESID = 0.80;     // agent-level propensity, shared across options
+const DEFAULT_OPT_SIGMA = 1.00; // option-specific taste, per (agent, option)
 
 /* Per-dimension trait spread. A population may declare its own (a number for
    all dimensions, or an object keyed by dimension); otherwise it is modest but
@@ -397,7 +405,11 @@ function simulate(cfg){
   agents.forEach(a => {
     const seg = a.segRef;
     const za = opts.map((o, oi) => zAffinity(optLoad[oi].load, a.t, seg, o, cfg, dimList));
-    a.p = za.map(x => logistic(x.z + a.resid));
+    // agent-level propensity (a.resid, shared) + option-specific taste (its own
+    // seeded draw per option) so an agent can say yes to one option and no to
+    // another instead of voting the same way on all of them
+    a.p = za.map((x, oi) => logistic(
+      x.z + a.resid + DEFAULT_OPT_SIGMA * gauss(rng(h32(cfg.marketKey + '|oj|' + a.id + '|' + oi + '|s' + cfg.seed)))));
     // the dimension that moved THIS agent most for each option — lets a verbatim
     // be matched to why this specific person decided as they did (Change 3)
     a.drivers = za.map(x => {

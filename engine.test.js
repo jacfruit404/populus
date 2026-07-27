@@ -340,6 +340,24 @@ function run(){
   ok(keen.some(a => a.yes[0]) && keen.some(a => !a.yes[0]),
      'a strongly-leaning segment still contains dissenters (not just the structural floor)');
 
+  // Agents discriminate BETWEEN options, not just within a segment. Even when
+  // the options are near-identical, a real share vote yes on some and no on
+  // others — rather than the shared residual forcing every agent all-yes or
+  // all-no (the bug: without a per-option taste term, that is exactly what
+  // happened once loadings made similar options score alike).
+  const simMkt = {name:'sim', unit:'$', cur:'$', ctx:['c'], names:{f:['A','B','C','D'], l:['E','F','G','H']},
+    segs:[{n:'S1', s:0.5, age:'30-40', urban:0.5, t:{price:.5,novelty:.6,trust:.5,skeptic:.4,effort:.4,social:.6}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']},
+          {n:'S2', s:0.5, age:'30-40', urban:0.5, t:{price:.4,novelty:.4,trust:.6,skeptic:.5,effort:.5,social:.4}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']}]};
+  const simL = {A:{price:.3,novelty:.5,trust:.2,skeptic:-.3,effort:-.2,social:.4},
+                B:{price:.3,novelty:.55,trust:.2,skeptic:-.25,effort:-.2,social:.45},
+                C:{price:.25,novelty:.5,trust:.15,skeptic:-.3,effort:-.15,social:.4}};
+  const disc = E.simulate({markets:{m:simMkt}, marketKey:'m', question:'Which first?', type:'product',
+    opts:['A','B','C'], segsOn:[true,true], popN:12000, seed:7, agentsShown:3000, loadings:simL});
+  const norm = disc.agents.filter(a => !a.out && !a.always);
+  const mixedVotes = norm.filter(a => { const y = a.yes.filter(Boolean).length; return y > 0 && y < a.yes.length; }).length;
+  ok(mixedVotes / norm.length > 0.25,
+     'agents discriminate between options — a real share vote yes on some and no on others, not all-yes/all-no (' + (100*mixedVotes/norm.length).toFixed(0) + '%)');
+
   /* ----------------------------------------- ephemeral personas (Change 9) */
   G('Ephemeral personas');
   const bigNames = {f: Array.from({length:40}, (_,i)=>'F'+i), l: Array.from({length:30}, (_,i)=>'L'+i)};
