@@ -146,6 +146,83 @@ function run(){
   ok(nonPricing.second === null, 'only pricing gets a revenue index');
   ok(typeof nonPricing.tie === 'boolean', 'non-pricing decisions still get a tie verdict');
 
+  /* ------------------------------------------------- billing units */
+  // "$9/month" is not $9. Reading only the number ranked a $108/year plan as
+  // the cheapest option on the table; the period has to be read too.
+  G('Billing unit detection');
+  ok(E.parseBillingUnit('$9/month') === 'monthly', '/month is monthly');
+  ok(E.parseBillingUnit('$9/mo') === 'monthly', '/mo is monthly');
+  ok(E.parseBillingUnit('$9 per month') === 'monthly', 'per month is monthly');
+  ok(E.parseBillingUnit('$99 monthly') === 'monthly', 'the word monthly is monthly');
+  ok(E.parseBillingUnit('$19/year') === 'yearly', '/year is yearly');
+  ok(E.parseBillingUnit('$19/yr') === 'yearly', '/yr is yearly');
+  ok(E.parseBillingUnit('$19 per year') === 'yearly', 'per year is yearly');
+  ok(E.parseBillingUnit('$199 annual') === 'yearly', 'annual is yearly');
+  ok(E.parseBillingUnit('$99 Flat') === 'onetime', 'flat is one-time');
+  ok(E.parseBillingUnit('$99 one-time') === 'onetime', 'one-time is one-time');
+  ok(E.parseBillingUnit('$299 lifetime') === 'onetime', 'lifetime is one-time');
+  ok(E.parseBillingUnit('$6.99') === 'unspecified', 'a bare number states no period');
+
+  G('Price normalisation');
+  ok(E.parsePrice('$9/month') === 9, 'parsePrice still reads only the number');
+  ok(E.normalizedPrice('$9/month') === 108, 'a monthly price is annualised to a common period');
+  ok(E.normalizedPrice('$19/year') === 19, 'a yearly price is already on that period');
+  ok(E.normalizedPrice('$99 Flat') === 99, 'a one-time price is taken at face value');
+  ok(E.normalizedPrice('$6.99') === 6.99, 'a bare number is unchanged');
+  ok(E.normalizedPrice('free') === null, 'a non-numeric price stays null');
+
+  G('Decision price and monthly flexibility');
+  const rho = 0.7;
+  ok(E.decisionPrice('$9/month', rho) === 9*12*rho, 'a monthly plan is annualised then discounted for retention');
+  ok(E.decisionPrice('$9/month', 1) === 108, 'at full retention a monthly plan is a full annual commitment');
+  ok(E.decisionPrice('$19/year', rho) === 19, 'a yearly price is its own decision price');
+  ok(E.decisionPrice('$99 Flat', rho) === 99, 'a one-time price is its own decision price');
+
+  // wtpTerm is latent-independent, so it isolates the price the buyer weighs.
+  // Flexibility puts a monthly plan below its full annual value but above its
+  // bare monthly number — an easier yes than $108, a harder one than $9.
+  const bSeg = E.activeSegs(market(), [true,true])[0], bDims = E.dims(market());
+  const zMo   = E.segZ(bSeg, '$9/month', cfg({monthlyRetention:rho}), bDims);
+  const zFull = E.segZ(bSeg, '$108',     cfg({monthlyRetention:rho}), bDims);
+  const zBare = E.segZ(bSeg, '$9',       cfg({monthlyRetention:rho}), bDims);
+  ok(zMo.wtpTerm < zBare.wtpTerm && zMo.wtpTerm > zFull.wtpTerm,
+     'a monthly plan is weighed between its bare number and its full annual value');
+  ok(near(zMo.wtpTerm, (bSeg.wtp - 9*12*rho)/(0.62*bSeg.sd)),
+     'the monthly decision price is exactly annualised × retention');
+
+  G('Standardising mixed billing');
+  const uni = E.simulate(cfg({opts:['$19/year','$39/year','$99/year']}));
+  ok(uni.second && uni.assumptions, 'a uniform recurring run ranks and reports its assumptions');
+  ok(uni.assumptions.horizonYears === 3 && uni.assumptions.monthlyRetention === 0.7,
+     'the defaults are a 3-year horizon at 0.7 retention');
+
+  // Recurring mixed with one-time now standardises instead of refusing.
+  const mixed = E.simulate(cfg({opts:['$19/year','$9/month','$39/year','$99 Flat']}));
+  ok(mixed.second && mixed.second.vals.length === 4, 'recurring mixed with one-time is ranked, not refused');
+  ok(mixed.assumptions.mixed === true, 'the run is flagged mixed so the UI can surface the assumptions');
+  ok(typeof mixed.tie === 'boolean', 'a mixed run still gets a tie verdict');
+
+  // The revenue index is expected revenue over the horizon: monthly annualised
+  // × horizon × retention, yearly × horizon, one-time once.
+  ok(E.revenueOverHorizon('$9/month', 3, 0.7) === 9*12*3*0.7, 'monthly revenue is annual value × horizon × retention');
+  ok(E.revenueOverHorizon('$19/year', 3, 0.7) === 57, 'yearly revenue renews across the horizon');
+  ok(E.revenueOverHorizon('$99 Flat', 3, 0.7) === 99, 'a one-time fee is paid once regardless of horizon');
+  const rev = mixed.popRate.map((p,i) => p * E.revenueOverHorizon(mixed.opts[i], 3, 0.7));
+  const mxr = Math.max.apply(null, rev);
+  ok(mixed.opts.every((o,i) => mixed.second.vals[i] === Math.round(rev[i]/mxr*100)),
+     'the revenue index is that expected revenue, normalised to 100');
+
+  // The horizon actually moves the ranking (demand is unchanged by it, revenue is not).
+  const shortH = E.simulate(cfg({opts:['$9/month','$99 Flat'], horizonYears:0.25}));
+  const longH  = E.simulate(cfg({opts:['$9/month','$99 Flat'], horizonYears:5}));
+  ok(shortH.second.vals.join() !== longH.second.vals.join(), 'changing the horizon changes the revenue ranking');
+
+  // A bare number beside a subscription is counted one-time and flagged, not refused.
+  const bare = E.simulate(cfg({opts:['$50','$9/month']}));
+  ok(bare.second, 'a bare number alongside a subscription still ranks');
+  ok(bare.assumptions.unspecifiedAsOnetime.indexOf('$50') >= 0,
+     'the bare number is flagged as counted one-time so it can be corrected');
+
   G('Drivers');
   ok(nonPricing.drivers.length === 6, 'six dimensions produce six drivers');
   ok(E.simulate(cfg()).drivers.length === 7, 'pricing adds the willingness-to-pay driver');

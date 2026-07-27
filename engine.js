@@ -76,6 +76,72 @@ function parsePrice(str){
   const m = String(str).replace(/,/g, '').match(/-?\d+(\.\d+)?/);
   return m ? parseFloat(m[0]) : null;
 }
+
+/* A pricing option can carry a billing period, and the number alone is not the
+   price: "$9/month" is $108/year, not $9. Reading only the number ranked a
+   $108/year plan as the cheapest thing on the table. parsePrice reads the
+   number; parseBillingUnit reads the period so the two can be put on one
+   footing. */
+function parseBillingUnit(str){
+  const s = String(str).toLowerCase();
+  // one-time first, so "$99 flat" is one-time rather than matching nothing
+  if (/\b(one[\s-]?time|one[\s-]?off|once|flat|lifetime|outright)\b/.test(s)) return 'onetime';
+  if (/\/\s*mo(nth)?\b|\bper\s+month\b|\ba\s+month\b|\bmonthly\b/.test(s))     return 'monthly';
+  if (/\/\s*(yr|year)\b|\bper\s+(year|annum)\b|\ba\s+year\b|\bannual(ly)?\b|\byearly\b/.test(s)) return 'yearly';
+  return 'unspecified';
+}
+// Common comparison period is one year: a monthly price is annualised (×12);
+// yearly, one-time and unspecified prices are already on that footing.
+const PERIOD_MULT = {monthly: 12, yearly: 1, onetime: 1, unspecified: 1};
+function normalizedPrice(str){
+  const p = parsePrice(str);
+  return p === null ? null : p * PERIOD_MULT[parseBillingUnit(str)];
+}
+function billingBasis(unit){ return (unit === 'monthly' || unit === 'yearly') ? 'recurring' : unit; }
+function billingReport(opts){
+  const list = (opts || []).map(String).filter(o => o.trim());
+  const units = list.map(parseBillingUnit);
+  const order = [], byBasis = {};
+  list.forEach((o, i) => {
+    const b = billingBasis(units[i]);
+    if (!byBasis[b]){ byBasis[b] = []; order.push(b); }
+    byBasis[b].push(o);
+  });
+  return {units, groups: order.map(b => ({basis: b, opts: byBasis[b]})), mixed: order.length > 1};
+}
+
+/* Ranking a subscription against a one-time fee needs two things: a horizon to
+   compare over, and — for monthly plans — a retention assumption, because a
+   monthly subscriber can leave. That freedom to leave is the flip side of the
+   flexibility that makes a monthly plan an easier "yes". The engine will not
+   invent these silently (that was the whole point of the bug), so they are
+   explicit defaults, adjustable by the caller and reported back to the UI. */
+const DEFAULT_HORIZON = 3;        // years to compare revenue over
+const DEFAULT_RETENTION = 0.7;    // share of the horizon a monthly subscriber stays
+const horizonOf   = cfg => Math.max(0.25, Number(cfg.horizonYears) || DEFAULT_HORIZON);
+const retentionOf = cfg => clamp(isFinite(Number(cfg.monthlyRetention)) ? Number(cfg.monthlyRetention) : DEFAULT_RETENTION, 0.05, 1);
+
+/* What the buyer weighs at decision time. A monthly plan is annualised but
+   discounted by expected retention: you commit to roughly what you expect to
+   actually pay. So a monthly plan is an easier "yes" than a same-value annual
+   one (full flexibility as retention → 0; no advantage as retention → 1). */
+function decisionPrice(str, retention){
+  const p = parsePrice(str);
+  if (p === null) return null;
+  return parseBillingUnit(str) === 'monthly' ? p * 12 * retention : p;
+}
+/* Expected revenue per converting customer over the horizon — the figure the
+   options are ranked on, and the one the earlier bug got wrong by reading
+   "$9/month" as $9 of one-off revenue. */
+function revenueOverHorizon(str, years, retention){
+  const p = parsePrice(str);
+  if (p === null) return 0;
+  switch (parseBillingUnit(str)){
+    case 'monthly': return p * 12 * years * retention;   // annual value × horizon × retention
+    case 'yearly':  return p * years;                    // renews across the horizon
+    default:        return p;                             // one-time / unspecified: paid once
+  }
+}
 function parseAgeRange(s){
   const m = String(s || '').match(/(\d{2})\s*(?:-|–|—|to)\s*(\d{2})/);
   if (m) return [+m[1], +m[2]];
@@ -113,7 +179,9 @@ function segZ(seg, opt, cfg, dimList){
   const A = dimList.reduce((a, d) => a + c[d.key], 0) / dimList.length;
   let z, wtpTerm = 0;
   if (cfg.type === 'pricing'){
-    const p = parsePrice(opt);
+    // annualised for monthly, then discounted for retention: the flexibility of
+    // a monthly plan makes it an easier yes than its full annual value implies
+    const p = decisionPrice(opt, retentionOf(cfg));
     wtpTerm = p === null ? 0 : (seg.wtp - p) / (0.62 * seg.sd);
     z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + 0.90 * A;
   } else {
@@ -193,22 +261,37 @@ function simulate(cfg){
     return clamp(1.96 * se + 0.016, 0.005, 0.18);
   });
 
-  let second = null;
+  // Billing cadence. Options can carry a period (/mo, /yr, flat). To rank them
+  // together they are put on one footing: expected revenue per customer over a
+  // comparison horizon, monthly plans annualised and discounted for retention.
+  // The horizon and retention are explicit assumptions, reported back so the
+  // number stays reconstructable rather than silently invented.
+  let second = null, billing = null, assumptions = null;
   if (cfg.type === 'pricing'){
-    const rev = opts.map((o, oi) => (popRate[oi] * (parsePrice(o) || 0)));
+    billing = billingReport(opts);
+    const H = horizonOf(cfg), RHO = retentionOf(cfg);
+    const rev = opts.map((o, oi) => popRate[oi] * revenueOverHorizon(o, H, RHO));
     const mx = Math.max.apply(null, rev) || 1;
     second = {label:'Revenue index', vals: rev.map(v => Math.round(v / mx * 100)),
               suffix:'', best: rev.indexOf(Math.max.apply(null, rev))};
+    assumptions = {
+      horizonYears: H, monthlyRetention: RHO, mixed: billing.mixed,
+      hasMonthly:   billing.units.indexOf('monthly') >= 0,
+      hasRecurring: billing.units.some(u => u === 'monthly' || u === 'yearly'),
+      // a bare number has no stated period; it is counted as a single purchase,
+      // which is worth flagging when it sits next to a subscription
+      unspecifiedAsOnetime: opts.filter((o, i) => billing.units[i] === 'unspecified')
+    };
   }
 
   // winner is decided on revenue for pricing, on rate otherwise
   const rank = opts.map((o, i) => i).sort((a, b) =>
-    cfg.type === 'pricing' ? second.vals[b] - second.vals[a] : popRate[b] - popRate[a]);
+    second ? second.vals[b] - second.vals[a] : popRate[b] - popRate[a]);
   const win = rank[0], run = rank[1] !== undefined ? rank[1] : rank[0];
 
   // Is the lead real, or inside the noise? For pricing the decision metric is
-  // revenue, so the tie test has to run on revenue, not on the raw buy rate.
-  const tie = opts.length < 2 ? false : (cfg.type === 'pricing'
+  // revenue, so the tie test runs on revenue, not on the raw buy rate.
+  const tie = opts.length < 2 ? false : (second
     ? Math.abs(second.vals[win] - second.vals[run]) <= 4
     : (popRate[win] - popRate[run]) <= (ci[win] + ci[run]) * 0.55);
 
@@ -232,7 +315,8 @@ function simulate(cfg){
   });
 
   return {opts, segs, segRates, popRate, ci, second, win, run, rank, drivers,
-          agents, spread, splitSeg, tie, n: cfg.popN, seed: cfg.seed, ts: new Date()};
+          agents, spread, splitSeg, tie, billing, assumptions,
+          n: cfg.popN, seed: cfg.seed, ts: new Date()};
 }
 
 function quoteFor(agent, oi, opts){
@@ -439,7 +523,8 @@ function parseOutcome(entered){
 return {
   h32, rng, logistic, clamp,
   CORE_DIMS, TRAIT_KEYS, DIMLBL, dimLabel, dims,
-  parsePrice, parseAgeRange,
+  parsePrice, parseBillingUnit, normalizedPrice, billingReport,
+  decisionPrice, revenueOverHorizon, parseAgeRange,
   latent, contribs, activeSegs, segZ, buildAgents, simulate, quoteFor,
   extractJSON, validateMarket, completenessGaps, coherenceWarning,
   ledgerStats, parseOutcome,

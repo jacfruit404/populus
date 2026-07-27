@@ -434,6 +434,7 @@ let S = {
   q:PRESETS[0].q, opts:PRESETS[0].o.slice(),
   segsOn:[true,true,true,true,true], popN:12000,
   result:null, agents:[], focusOpt:0, tab:'segments', history:[], seed:1,
+  horizon:3, retention:0.7,          // pricing comparison assumptions, editable on the results screen
   ledgerBacking:'unknown', ledgerEditing:null, ledgerDraft:{},
   llm:{endpoint:'http://127.0.0.1:11434', model:'', models:[], status:'unknown', busy:false,
        mode:'new', prompt:'', log:[]}
@@ -444,7 +445,8 @@ const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
 /* ============================== ENGINE (bindings) ============================== */
 const simCfg = () => ({
   markets: MARKETS, marketKey: S.market, question: S.q, type: S.type,
-  opts: S.opts.filter(o => o.trim()), segsOn: S.segsOn, popN: S.popN, seed: S.seed
+  opts: S.opts.filter(o => o.trim()), segsOn: S.segsOn, popN: S.popN, seed: S.seed,
+  horizonYears: S.horizon, monthlyRetention: S.retention
 });
 const simulate    = () => Engine.simulate(simCfg());
 const buildAgents = () => Engine.buildAgents(simCfg());
@@ -830,6 +832,11 @@ function toggleSeg(i){
   if(S.segsOn[i] && S.segsOn.filter(Boolean).length<=1) return;
   S.segsOn[i]=!S.segsOn[i]; S.result=null; render();
 }
+// Editing a pricing assumption re-runs the same sample — the seed is unchanged,
+// so only the assumption moves, not which agents were drawn.
+function setHorizon(v){ const n=parseFloat(v); if(isFinite(n)&&n>0){ S.horizon=n; recomputeResult(); } }
+function setRetention(v){ const n=parseFloat(v); if(isFinite(n)){ S.retention=clamp(n/100,0.05,1); recomputeResult(); } }
+function recomputeResult(){ if(!S.result) return; S.result=simulate(); S.focusOpt=S.result.win; render(); }
 function drawPop(){
   const el = $('#popgrid'); if(!el) return;
   const ready = !!(S.result && S.result.agents && S.result.agents.length);
@@ -893,36 +900,63 @@ function view4(){
   const R = S.result, T = TYPES[S.type], M = MARKETS[S.market];
   const w = R.win, rate = R.popRate[w], ci = R.ci[w];
   const gap = R.popRate[w]-R.popRate[R.run];
-  const conf = ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional';
+  // For pricing the decision is made on revenue, so the margin and the
+  // confidence badge must speak revenue, not the buy rate that sits beside them.
+  const isPricing = !!R.second;
+  const revGap = isPricing ? R.second.vals[w] - R.second.vals[R.run] : 0;
+  const conf = isPricing
+    ? (Math.abs(revGap) <= 4 ? 'Directional' : Math.abs(revGap) < 12 ? 'Moderate' : 'High')
+    : (ci<.035 ? 'High' : ci<.06 ? 'Moderate' : 'Directional');
   const maxRate = Math.max(...R.popRate)||1;
 
   const secondBlock = R.second ? `
     <div class="metric"><div class="v">${R.second.vals[w]}</div>
       <div class="k">${R.second.label}</div><div class="ci">peak of the tested range</div></div>` : '';
 
+  // When options carry billing periods they are standardised to revenue over a
+  // horizon (monthly plans annualised, then discounted for retention). Show
+  // those assumptions and let them be edited: a hidden horizon is exactly how
+  // "$9/month is the cheapest option" happens in the first place.
+  const A = R.assumptions, showAssume = A && (A.hasRecurring || A.mixed);
+  const numStyle = 'width:62px;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:2px 7px;font-family:var(--mono);font-size:12px';
+  const assumeNote = showAssume ? `<div style="margin:0 0 18px;padding:11px 14px;border:1px solid var(--line);border-radius:8px;color:var(--muted);font-size:12.5px;line-height:1.7">
+    Ranked on <b style="color:var(--ink2);font-weight:400">expected revenue per customer</b> over a
+    <input type="number" min="0.25" step="0.25" value="${A.horizonYears}" onchange="setHorizon(this.value)" style="${numStyle}"> year horizon${A.hasMonthly?`, monthly plans annualised at <input type="number" min="5" max="100" step="5" value="${Math.round(A.monthlyRetention*100)}" onchange="setRetention(this.value)" style="${numStyle}">% retention`:''}.
+    ${A.mixed && A.unspecifiedAsOnetime.length ? `<span style="display:block;margin-top:7px;color:var(--faint)">${A.unspecifiedAsOnetime.map(esc).join(', ')} ${A.unspecifiedAsOnetime.length>1?'have':'has'} no stated period — counted as a one-time price. Add <b style="color:var(--ink2);font-weight:400">/mo</b> or <b style="color:var(--ink2);font-weight:400">/yr</b> to change that.</span>`:''}
+    <span style="display:block;margin-top:7px;color:var(--faint)">These are assumptions, not facts. Change them and the ranking moves.</span>
+  </div>` : '';
+
   return `
   <div class="eyebrow">04 &nbsp;The Prediction</div>
   <h1 style="font-size:26px;max-width:760px">${esc(S.q)}</h1>
   <div class="sub" style="margin-bottom:24px">${esc(M.name)} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
   ${mismatchBanner()}
+  ${assumeNote}
 
   <div class="headline">
     <div class="lbl" style="color:${R.tie?'var(--red)':'var(--gold)'};margin-bottom:4px">${R.tie?'Too close to call':'Most likely to win'}</div>
     <div class="verdict">${R.tie?`<b>${esc(R.opts[w])}</b> <span style="color:var(--muted);font-size:20px">or</span> <b>${esc(R.opts[R.run])}</b>`:`<b>${esc(R.opts[w])}</b>`}</div>
     <div style="color:var(--ink2);max-width:640px;font-size:13.5px">
       ${R.tie
-        ? `These two are inside the noise${R.second?' on revenue':''} — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
-        : `${pct(rate)}% of the population would ${T.verb} it — ${(gap*100).toFixed(1)} points clear of ${esc(R.opts[R.run])}, a gap wider than the interval.`}
+        ? (isPricing
+          ? `These two are inside the noise <b style="color:var(--ink2)">on revenue</b> — revenue index ${R.second.vals[w]} vs ${R.second.vals[R.run]} (the ${pct(rate)}% vs ${pct(R.popRate[R.run])}% ${T.verb} rates are a different metric). Re-drawing the sample flips the revenue order, so the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`
+          : `These two are inside the noise — ${pct(rate)}% vs ${pct(R.popRate[R.run])}% would ${T.verb} them. Re-drawing the sample flips the order, which means the difference is not real. Decide on something else: margin, ops cost, or what it does to the brand.`)
+        : (isPricing
+          ? `It earns the most across the tested range — revenue index ${R.second.vals[w]} vs ${esc(R.opts[R.run])} at ${R.second.vals[R.run]}, a lead wider than the noise. ${pct(rate)}% would ${T.verb} it at this price.`
+          : `${pct(rate)}% of the population would ${T.verb} it — ${(gap*100).toFixed(1)} points clear of ${esc(R.opts[R.run])}, a gap wider than the interval.`)}
       The result is carried by <b style="color:var(--ink)">${R.splitSeg.n}</b>, who diverge ${(R.spread*100).toFixed(1)} points from the population average.
     </div>
     <div class="metrics">
       <div class="metric"><div class="v">${pct(rate)}%</div>
         <div class="k">${T.metric}</div><div class="ci">±${pct(ci)} at 95%</div></div>
       ${secondBlock}
-      <div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
-        <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>
+      ${isPricing
+        ? `<div class="metric"><div class="v">${revGap>0?'+':''}${revGap}<span style="font-size:16px"> idx</span></div>
+             <div class="k">Revenue margin over runner-up</div><div class="ci">${esc(R.opts[R.run])} · rev idx ${R.second.vals[R.run]}</div></div>`
+        : `<div class="metric"><div class="v">${gap>0?'+':''}${(gap*100).toFixed(1)}<span style="font-size:16px">pt</span></div>
+             <div class="k">Margin over runner-up</div><div class="ci">${esc(R.opts[R.run])}</div></div>`}
       <div class="metric"><div class="v" style="color:${conf==='High'?'var(--teal)':conf==='Moderate'?'var(--gold2)':'var(--red)'}">${conf}</div>
-        <div class="k">Confidence</div><div class="ci">${conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade'}</div></div>
+        <div class="k">Confidence</div><div class="ci">${isPricing?(conf==='Directional'?'revenue lead is inside the noise':'revenue lead clears the noise'):(conf==='Directional'?'treat as a direction, not a number':'interval is decision-grade')}</div></div>
     </div>
   </div>
 
