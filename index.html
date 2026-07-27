@@ -665,7 +665,7 @@ async function llmEnrich(market, brief, gaps){
   const raw = await modelCall(SCHEMA_PROMPT,
     `You produced this population:\n\n${marketJSON(market)}\n\nIt is missing required detail. Return the SAME population with the following added. `+
     `Keep every existing segment name, share, quote and trait value exactly as they are — add only what is listed:\n- ${gaps.join('\n- ')}\n\n`+
-    `The original brief was: ${brief}`, 4096);
+    `The original brief was: ${brief}`, 8192);
   return validateMarket(extractJSON(raw));
 }
 
@@ -683,7 +683,9 @@ async function llmGenerate(){
   try{
     llmLog(`${editing?'Editing':'Generating'} with ${(S.llm.key||'').trim()?S.llm.hostedModel:S.llm.model}…`);
     const t0 = performance.now();
-    const raw = await modelCall(SCHEMA_PROMPT, user, 4096);
+    // Populations are large — a capable model easily runs past 4k tokens and the
+    // JSON truncates mid-array. Give generation real headroom.
+    const raw = await modelCall(SCHEMA_PROMPT, user, 8192);
     llmLog(`Response in ${((performance.now()-t0)/1000).toFixed(1)}s, ${raw.length} chars.`);
     const obj = extractJSON(raw);
     let v = validateMarket(obj);
