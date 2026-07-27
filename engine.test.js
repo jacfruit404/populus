@@ -369,6 +369,40 @@ function run(){
   ok(mixedVotes / norm.length > 0.25,
      'agents discriminate between options — a real share vote yes on some and no on others, not all-yes/all-no (' + (100*mixedVotes/norm.length).toFixed(0) + '%)');
 
+  /* ----------------------------------------- dynamic range */
+  // The response function must SEPARATE stimuli. It used to divide affinity by
+  // the dimension count, so a strong signal on a few dimensions vanished — every
+  // message/product/policy verdict pinned near 52%, and adding dimensions made it
+  // worse. Engagement-normalisation fixed it; this is the test that would have
+  // caught the bug on day one.
+  G('Dynamic range');
+  const rangeMkt = (extra) => {
+    const traits = [];
+    for (let i = 0; i < extra; i++) traits.push({key:'v'+i, label:'V'+i});
+    const seg = (n, s) => {
+      const t = {price:.5,novelty:.5,trust:.5,skeptic:.5,effort:.5,social:.5};
+      traits.forEach(tr => { t[tr.key] = 0.9; });   // the population holds these values strongly
+      return {n, s, age:'30-50', urban:0.5, t, wtp:10, sd:3, pos:['{O} y'], neg:['{O} n']};
+    };
+    return {name:'r', unit:'', cur:'', ctx:['c'], names:{f:['A','B','C','D'], l:['E','F','G','H']},
+            traits, segs:[seg('S1',0.5), seg('S2',0.5)]};
+  };
+  const rangeRate = (mkt, sign, engageN) => {
+    const load = {}; E.dims(mkt).forEach(d => { load[d.key] = 0; });
+    mkt.traits.slice(0, engageN).forEach(tr => { load[tr.key] = sign; });   // engage only a few
+    return E.simulate({markets:{m:mkt}, marketKey:'m', question:'Q', type:'policy', opts:['X'],
+      segsOn:[true,true], popN:12000, seed:4, agentsShown:4000, loadings:{X:load}}).popRate[0];
+  };
+  const rWide = rangeMkt(8);   // 8 custom dims, engage just 2
+  const hiR = rangeRate(rWide, 0.9, 2), loR = rangeRate(rWide, -0.9, 2);
+  ok(hiR > 0.72 && loR < 0.28,
+     'a strong signal on 2 of ~14 dimensions still separates the verdict (' + (hiR*100).toFixed(0) + '% vs ' + (loR*100).toFixed(0) + '%) — not diluted to 50%');
+  ok(hiR - loR > 0.45, 'the favourable and opposing stimuli span a wide range, not a compressed band');
+  // a neutral stimulus lands near 50 — the range is real, not a constant offset
+  const midR = E.simulate({markets:{m:rWide}, marketKey:'m', question:'Q', type:'policy', opts:['X'],
+    segsOn:[true,true], popN:12000, seed:4, agentsShown:4000, loadings:{X:(()=>{const o={};E.dims(rWide).forEach(d=>o[d.key]=0);return o;})()}}).popRate[0];
+  ok(midR > 0.42 && midR < 0.60, 'a neutral stimulus lands near 50% (' + (midR*100).toFixed(0) + '%)');
+
   /* ----------------------------------------- ephemeral personas (Change 9) */
   G('Ephemeral personas');
   const bigNames = {f: Array.from({length:40}, (_,i)=>'F'+i), l: Array.from({length:30}, (_,i)=>'L'+i)};

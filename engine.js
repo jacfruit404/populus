@@ -276,18 +276,31 @@ function activeSegs(market, segsOn){
    explanation) and, since Change 2, with each agent's own trait vector (so two
    people in a segment genuinely differ). Pricing keeps its real WTP economics;
    the affinity term A is the part loadings made meaningful. */
+// How hard affinity drives the verdict. Non-pricing lives or dies on this; for
+// pricing the WTP term dominates and affinity is a secondary nudge.
+const AFFINITY_SCALE = 2.60;
+const AFFINITY_SCALE_PRICING = 0.55;
+
 function zAffinity(loadObj, traits, seg, opt, cfg, dimList){
   const c = contribs(loadObj, traits, dimList);
-  const A = dimList.reduce((a, d) => a + c[d.key], 0) / dimList.length;
+  // Engagement-normalised affinity. Weight each dimension's trait-alignment by
+  // how strongly the option ENGAGES it, and divide by the TOTAL engagement — not
+  // by the dimension count. A strong signal on two dimensions must not be
+  // diluted by seven the option never touches. A stays in ~[-1,1] no matter how
+  // many dimensions exist. (Dividing by dimList.length pinned every non-pricing
+  // verdict near 52%: each added dimension shrank A toward zero, so the engine
+  // could not separate an 88/12 split from a coin flip.)
+  let mag = 0; dimList.forEach(d => { mag += Math.abs(loadObj[d.key]); });
+  const A = mag > 1e-6 ? dimList.reduce((a, d) => a + c[d.key], 0) / mag : 0;
   let z, wtpTerm = 0;
   if (cfg.type === 'pricing'){
     // annualised for monthly, then discounted for retention: the flexibility of
     // a monthly plan makes it an easier yes than its full annual value implies
     const p = decisionPrice(opt, retentionOf(cfg));
     wtpTerm = p === null ? 0 : (seg.wtp - p) / (0.62 * seg.sd);
-    z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + 0.90 * A;
+    z = 0.15 + 0.92 * clamp(wtpTerm, -4, 4) + AFFINITY_SCALE_PRICING * A;
   } else {
-    z = 0.10 + 2.30 * A;
+    z = 0.10 + AFFINITY_SCALE * A;
   }
   return {z, c, wtpTerm, A};
 }
