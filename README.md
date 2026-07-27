@@ -234,6 +234,27 @@ written, and gitignored so your decisions stay private. The ledger starts empty
 and says so. Until several predictions are closed, the model has no track record
 and its numbers deserve no particular trust.
 
+### Retrodiction benchmark
+
+The ledger cannot start until a real decision ships. The benchmark gives
+calibration on day one. `benchmark.js` encodes ~45 public survey items with
+published marginals (Pew / Gallup / GSS) as decisions — favor/oppose, believe,
+use, buy — and scores the engine against the known human answer, at least ten
+per decision type.
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... node benchmark.js
+```
+
+It reports mean error, bias, correlation and coverage, but the headline number
+is the **compression ratio**, `sd(predicted) / sd(actual)`. That is the only
+test that catches a flat response function: an engine pinned near 52% cannot
+reproduce an 88/12 split no matter what, and a low compression ratio says so
+immediately. This stays out of the ledger on purpose — the ledger is for real
+shipped predictions; this is engine validation against known answers. Toplines
+are approximate and labelled to verify against source; the spread and the
+correlation are what matter, and are robust to a few points of error in any row.
+
 ---
 
 ## Tests
