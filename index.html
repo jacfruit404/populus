@@ -433,7 +433,9 @@ let S = {
   step:1, type:'pricing', market:'grocery',
   q:PRESETS[0].q, opts:PRESETS[0].o.slice(),
   segsOn:[true,true,true,true,true], popN:12000,
-  result:null, agents:[], focusOpt:0, tab:'segments', history:[], seed:1,
+  result:null, agents:[], focusOpt:0, tab:'segments', history:[],
+  seed:(Math.floor(Math.random()*4294967295)>>>0)||1,   // fresh personas each run; recorded so it still reproduces
+  loadings:{}, loadingsCache:{}, modelId:null,
   horizon:3, retention:0.7,          // pricing comparison assumptions, editable on the results screen
   ledgerBacking:'unknown', ledgerEditing:null, ledgerDraft:{},
   llm:{endpoint:'http://127.0.0.1:11434', model:'', models:[], status:'unknown', busy:false,
@@ -446,7 +448,7 @@ const allOn = (mk) => (MARKETS[mk||S.market].segs).map(()=>true);
 const simCfg = () => ({
   markets: MARKETS, marketKey: S.market, question: S.q, type: S.type,
   opts: S.opts.filter(o => o.trim()), segsOn: S.segsOn, popN: S.popN, seed: S.seed,
-  horizonYears: S.horizon, monthlyRetention: S.retention
+  horizonYears: S.horizon, monthlyRetention: S.retention, loadings: S.loadings
 });
 const simulate    = () => Engine.simulate(simCfg());
 const buildAgents = () => Engine.buildAgents(simCfg());
@@ -577,6 +579,48 @@ async function llmChat(system, user){
 }
 const marketJSON = m => JSON.stringify({name:m.name,universe:m.universe,frame:m.frame,unit:m.unit,
   cur:m.cur,ctx:m.ctx,names:m.names,traits:m.traits||[],segs:m.segs},null,1);
+
+/* One chat turn, wherever a model is. Prefer the hosted proxy (/api/llm — the
+   key stays server-side); fall back to a local Ollama if the proxy is not
+   configured. Throws if neither is available, so the caller degrades to the
+   hash and flags it. */
+async function modelCall(system, user){
+  try{
+    const r = await fetch('/api/llm', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({system, prompt:user, max_tokens:1024})});
+    if(r.ok){ const j = await r.json(); if(j.ok && j.text){ S.modelId = j.model || 'hosted'; return j.text; } }
+    // 503 = proxy present but no key; anything else = fall through to Ollama
+  }catch(e){/* proxy unreachable; try the local model */}
+  if(S.llm.status==='ok'){ S.modelId = S.llm.model; return llmChat(system, user); }
+  throw new Error('no model available');
+}
+const anyModel = () => !!S.modelId || S.llm.status==='ok';
+
+/* Stimulus loadings (Change 1). For each option, ask the model how strongly it
+   invokes each dimension; validate and cache. Any option left unresolved falls
+   back to the hash in the engine (flagged, never silent). Caching by
+   loadingsKey makes a re-run free and a committed prediction reproducible. */
+async function resolveLoadings(){
+  const dl = Engine.dims(MARKETS[S.market]);
+  const opts = S.opts.filter(o => o.trim());
+  S.loadings = {};
+  S.loadingsCache = S.loadingsCache || {};
+  const sys = 'You score one option on how strongly it invokes each behavioural dimension. Return raw JSON only.';
+  for(const opt of opts){
+    const key = Engine.loadingsKey(S.q, opt, S.type, S.modelId || 'model');
+    if(S.loadingsCache[key]){ S.loadings[opt] = S.loadingsCache[key]; continue; }
+    let text; try{ text = await modelCall(sys, Engine.loadingsPrompt(S.q, opt, S.type, dl)); }
+    catch(e){ return; }                                  // no model → hash fallback for all
+    let obj; try{ obj = extractJSON(text); }catch(e){ continue; }
+    const v = Engine.validateLoadings(obj, dl);
+    if(!v.ok) continue;                                  // all-zeros etc → hash fallback
+    S.loadingsCache[key] = v.loadings; S.loadings[opt] = v.loadings;
+  }
+}
+
+// Ephemeral personas (Change 9): a fresh, unpredictable seed each run — but
+// recorded on the prediction, so an auditor can reproduce it exactly.
+const randomSeed = () => (Math.floor(Math.random() * 4294967295) >>> 0) || 1;
 
 async function llmEnrich(market, brief, gaps){
   const raw = await llmChat(SCHEMA_PROMPT,
@@ -872,9 +916,14 @@ function run(){
     ['Resolving segments', 'Decomposing the outcome by who drives it', `Resolved segment-level rates and dispersion`],
     ['Scoring the prediction', 'Interval from sampling error and model error', `Prediction logged to the calibration ledger`]
   ];
+  // Resolve stimulus loadings while the animation plays, so the response
+  // function reads the actual claim instead of a hash of the question text.
+  S.loadings = {};
+  const loadingsReady = resolveLoadings().catch(()=>{});
   let i = 0;
-  const tick = () => {
+  const tick = async () => {
     if(i>=phases.length){
+      await loadingsReady;
       S.result = simulate(); S.focusOpt = S.result.win; S.tab='segments';
       S.history.unshift({q:S.q, winLabel:S.result.opts[S.result.win], rate:S.result.popRate[S.result.win],
         snapshot:{type:S.type,market:S.market,q:S.q,opts:S.opts.slice(),segsOn:S.segsOn.slice(),popN:S.popN,result:S.result}});
@@ -931,6 +980,9 @@ function view4(){
   <h1 style="font-size:26px;max-width:760px">${esc(S.q)}</h1>
   <div class="sub" style="margin-bottom:24px">${esc(M.name)} · ${R.segs.length} segments · ${R.n.toLocaleString()} agents · sample #${R.seed} · ${R.ts.toLocaleString()}</div>
   ${mismatchBanner()}
+  ${(R.hashFallback && S.type!=='pricing') ? `<div class="mismatch"><span class="ic">▲</span><span class="tx">
+    <b>No model connected — the verdict is a hash, not a reading</b>For a ${({product:'product',message:'messaging',policy:'policy'}[S.type]||S.type)} decision the response depends on what each option <i>means</i>. With no model to read it, the engine falls back to hashing the wording — two paraphrases of one claim score differently, so these numbers are noise dressed as a prediction. Connect a model and re-run: set <b style="color:var(--ink2);font-weight:400">ANTHROPIC_API_KEY</b> and serve with <b style="color:var(--ink2);font-weight:400">./serve.sh</b>, or point the model panel at a local Ollama.
+  </span></div>` : ''}
   ${assumeNote}
 
   <div class="headline">
@@ -990,7 +1042,7 @@ function view4(){
     <button class="btn sec" onclick="goto(1)">Change the decision</button>
     <button class="btn sec" onclick="goto(2)">Change the population</button>
     <button class="btn sec" onclick="run()">Re-run same sample</button>
-    <button class="btn" onclick="S.seed++;run()">Draw a new sample →</button>
+    <button class="btn" onclick="S.seed=randomSeed();run()">Draw a new sample →</button>
   </div>
   <div class="hint" style="margin-top:12px;max-width:620px;line-height:1.6">
     A re-run of sample #${R.seed} returns exactly this result — the model is deterministic given a seed, which is what makes
