@@ -459,6 +459,9 @@ const simulate    = () => Engine.simulate(simCfg());
 const buildAgents = () => Engine.buildAgents(simCfg());
 const activeSegs  = () => Engine.activeSegs(MARKETS[S.market], S.segsOn);
 const quoteFor    = (a, oi) => Engine.quoteFor(a, oi, S.result.opts);
+// Trait-matched verbatim: uses the segment's richer bank when one exists,
+// otherwise falls back to the pos/neg pair. See resolveBanks().
+const pickQuote   = (a, oi) => Engine.pickQuote(a, oi, S.result.opts);
 
 /* ============================== LOCAL MODEL ==============================
    Talks to an OpenAI-compatible or Ollama-native local server. Nothing leaves
@@ -655,6 +658,32 @@ async function resolveLoadings(){
     if(!v.ok) continue;                                  // all-zeros etc → hash fallback
     S.loadingsCache[key] = v.loadings; S.loadings[opt] = v.loadings;
   }
+}
+
+/* Trait-matched verbatim bank (Change 3). One model call per active segment
+   generates ~24 tagged quotes; pickQuote then draws the one matching each
+   agent's own driver and verdict. Best-effort and non-blocking — the headline
+   never waits on it, and with no model the Voices tab keeps the pos/neg pair.
+   Patches the live agents' shared segRef so quotes appear without a re-run. */
+async function resolveBanks(){
+  if(!anyModel() || !S.result) return;
+  const M = MARKETS[S.market], dl = Engine.dims(M), opts = S.opts.filter(o => o.trim());
+  const sys = 'You write short first-person customer reactions. Return raw JSON only.';
+  S.banksCache = S.banksCache || {};
+  const bySeg = {};
+  for(let i = 0; i < M.segs.length; i++){
+    if(S.segsOn[i] === false) continue;
+    const sg = M.segs[i];
+    const ck = 'B' + h32(sg.n + '|' + S.q + '|' + S.type + '|' + (S.modelId || 'm')).toString(36);
+    if(S.banksCache[ck]){ bySeg[i] = S.banksCache[ck]; continue; }
+    let text; try{ text = await modelCall(sys, Engine.bankPrompt(S.q, opts, sg, dl), 3072); }
+    catch(e){ continue; }
+    let obj; try{ obj = extractJSON(text); }catch(e){ continue; }
+    const bank = Engine.validateBank(obj.bank || obj, dl);
+    if(bank.length >= 6){ S.banksCache[ck] = bank; bySeg[i] = bank; }
+  }
+  // agents in a segment share one segRef object; setting .bank on it reaches all
+  if(S.result && S.result.agents) S.result.agents.forEach(a => { if(bySeg[a.seg]) a.segRef.bank = bySeg[a.seg]; });
 }
 
 // Ephemeral personas (Change 9): a fresh, unpredictable seed each run — but
@@ -986,6 +1015,8 @@ function run(){
       // Measure uncertainty instead of asserting it: 20 independent persona
       // draws at moderate N. Reuses the resolved loadings (no extra model calls).
       S.boot = Engine.bootstrap(simCfg(), {replicates:20, n:1000});
+      // Generate the richer verbatim banks in the background; refresh Voices when ready.
+      resolveBanks().then(()=>{ if(S.step===4 && S.tab==='voices') render(); }).catch(()=>{});
       S.history.unshift({q:S.q, winLabel:S.result.opts[S.result.win], rate:S.result.popRate[S.result.win],
         snapshot:{type:S.type,market:S.market,q:S.q,opts:S.opts.slice(),segsOn:S.segsOn.slice(),popN:S.popN,result:S.result}});
       if(S.history.length>8) S.history.pop();
@@ -1176,7 +1207,7 @@ function tabVoices(){
     `<button class="tile ${i===oi?'on':''}" style="padding:6px 11px;font-size:12px" onclick="S.focusOpt=${i};render()">${esc(o)}</button>`).join('')}</div>
   ${picks.map(a=>`
     <div class="quote" style="border-left-color:${SEGC[a.seg%SEGC.length]}">
-      <p>“${esc(quoteFor(a,oi))}”</p>
+      <p>“${esc(pickQuote(a,oi))}”</p>
       <div class="who"><b style="color:var(--ink2);font-weight:600">${a.name}</b> · ${a.age}${a.geo?' · '+esc(a.geo):''} · ${esc(a.ctx)}
         <span class="pill" style="background:rgba(255,255,255,.05);color:${SEGC[a.seg%SEGC.length]}">${esc(a.segRef.n)}</span>
         <span class="pill ${a.yes[oi]?'y':'n'}">${a.yes[oi]?'WOULD '+TYPES[S.type].verb.toUpperCase():'WOULD NOT'} · p=${a.p[oi].toFixed(2)}</span>
@@ -1309,7 +1340,7 @@ function showAgent(id){
     <div class="resp">
       <div class="rt"><span>${esc(o)}</span>
         <span class="pill ${a.yes[i]?'y':'n'}">${a.yes[i]?'YES':'NO'} · p=${a.p[i].toFixed(2)}</span></div>
-      <div class="rq">“${esc(quoteFor(a,i))}”</div>
+      <div class="rq">“${esc(pickQuote(a,i))}”</div>
     </div>`).join('') : `<div class="hint">Run the simulation to see this agent's response to each option.</div>`;
   $('#modal').innerHTML = `
   <div class="scrim" onclick="if(event.target===this)closeAgent()">

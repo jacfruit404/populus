@@ -401,6 +401,21 @@ function run(){
   ok(E.pickQuote(noBankAgent, 0, bankR.opts) === E.quoteFor(noBankAgent, 0, bankR.opts),
      'with no bank, pickQuote falls back to the pos/neg pair');
 
+  // Bank generation contract (the model side of Change 3).
+  const bp = E.bankPrompt('Which claim?', ['A','B'], {n:'Seg', b:'desc'}, E.dims(market()));
+  ok(/\{O\}/.test(bp) && /bank/i.test(bp), 'the bank prompt asks for {O}-tagged quotes in a bank');
+  const vb = E.validateBank([
+    {driver:'skeptic', valence:'neg', text:'{O}? no way.'},
+    {driver:'price', valence:'pos', text:'{O} is fair for what it is.'},
+    {driver:'bogus', valence:'pos', text:'{O} works for me even so.'},        // unknown driver
+    {driver:'trust', valence:'pos', text:'no option token here so this drops'},
+    {driver:'social', valence:'weird', text:'{O} — everyone I know has it.'}   // bad valence
+  ], E.dims(market()));
+  ok(vb.length === 4, 'a quote that never references the option is dropped; the rest kept');
+  ok(vb.every(q => q.text.indexOf('{O}') >= 0), 'every kept quote references the option');
+  ok(vb.every(q => q.driver !== 'bogus'), 'an unknown driver is remapped to a real dimension');
+  ok(vb.every(q => q.valence === 'pos' || q.valence === 'neg'), 'valence is normalised to pos/neg');
+
   /* ----------------------------------------- replicate bootstrap (Change 8) */
   G('Replicate bootstrap');
   const boot = E.bootstrap(cfg({opts:['$4','$8','$16']}), {replicates: 12, n: 600});

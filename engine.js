@@ -541,6 +541,47 @@ function pickQuote(agent, oi, opts){
   return String(q.text).replace(/\{O\}/g, opts[oi]);
 }
 
+/* The bank pickQuote draws from is generated once per segment per run (~6 model
+   calls, not 260): 24 tagged first-person reactions. bankPrompt builds the ask;
+   validateBank cleans the reply the way validateMarket cleans a population —
+   every quote must carry the {O} token (a reaction that never names the option
+   is not a reaction to it), a valence, and a driver that is a real dimension. */
+function bankPrompt(question, opts, seg, dimList){
+  const dims = dimList.map(d => d.key + ' (' + d.label + ')').join(', ');
+  return [
+    'Write short first-person reactions from ONE customer segment to the option in a decision.',
+    'Question: ' + question,
+    'Options being tested: ' + (opts || []).join(' | '),
+    'Segment: ' + (seg.n || 'segment') + ' — ' + (seg.b || ''),
+    '',
+    'Produce 24 quotes this segment might say. Each quote:',
+    '  - one sentence, first person, specific, no marketing voice',
+    '  - contains the literal token {O} where the option would appear',
+    '  - tagged with the ONE dimension that drives it (driver) and whether it is',
+    '    positive or negative toward the option (valence: "pos" or "neg").',
+    'Dimension keys: ' + dims + '.',
+    'Cover a spread of dimensions and both valences.',
+    '',
+    'Return raw JSON only: {"bank":[{"driver":"...","valence":"pos","text":"... {O} ..."}]}'
+  ].join('\n');
+}
+function validateBank(arr, dimList){
+  if (!Array.isArray(arr)) return [];
+  const keys = {}; dimList.forEach(d => { keys[d.key] = 1; });
+  const out = [];
+  arr.forEach(q => {
+    if (!q || typeof q.text !== 'string') return;
+    const text = q.text.trim();
+    if (text.indexOf('{O}') < 0 || text.length < 8) return;      // must reference the option
+    out.push({
+      driver: keys[q.driver] ? q.driver : dimList[0].key,        // unknown driver → first dim (still valence-usable)
+      valence: q.valence === 'neg' ? 'neg' : 'pos',
+      text: text.slice(0, 180)
+    });
+  });
+  return out.slice(0, 40);
+}
+
 /* Replicate bootstrap. popN was user-set but only ~260 agents were ever drawn,
    so the closed-form interval described a sample never taken, and its +0.016
    fudge was far too small for a model with a dozen hand-tuned constants. Measure
@@ -779,7 +820,7 @@ return {
   decisionPrice, revenueOverHorizon, parseAgeRange,
   latent, loadingsPrompt, loadingsKey, validateLoadings, optionLoadings,
   contribs, activeSegs, zAffinity, segZ, sigmaFor, uniqueNames,
-  buildAgents, simulate, bootstrap, quoteFor, pickQuote,
+  buildAgents, simulate, bootstrap, quoteFor, pickQuote, bankPrompt, validateBank,
   extractJSON, validateMarket, completenessGaps, coherenceWarning,
   ledgerStats, parseOutcome,
   AGENTS_SHOWN
