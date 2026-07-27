@@ -252,6 +252,136 @@ function run(){
   ok(R.agents.every(a => E.quoteFor(a, 1, ['$4','$8','$16']).indexOf('{O}') === -1),
      'no agent produces an unsubstituted quote');
 
+  /* ----------------------------------------- stimulus loadings (Change 1) */
+  // The original bug: for message/product/policy the response function was a
+  // hash of the question, so two paraphrases scored differently and appending
+  // "." to the question flipped the winner. These are the invariants that would
+  // have caught it.
+  G('Stimulus loadings');
+  const dl6 = E.dims(market());
+  const fullLoad = {}; dl6.forEach(d => { fullLoad[d.key] = 0.3; });
+  ok(E.validateLoadings(fullLoad, dl6).ok, 'a complete loadings vector validates');
+  const clamped = E.validateLoadings(Object.assign({}, fullLoad, {price: 5, novelty: -9}), dl6);
+  ok(clamped.loadings.price === 1 && clamped.loadings.novelty === -1 && clamped.fix.length >= 2,
+     'out-of-range loadings are clamped to [-1,1] and every repair reported');
+  const partial = {}; dl6.slice(1).forEach(d => { partial[d.key] = 0.3; });
+  ok(E.validateLoadings(partial, dl6).loadings[dl6[0].key] === 0, 'a missing loading defaults to 0');
+  const zeroLoad = {}; dl6.forEach(d => { zeroLoad[d.key] = 0; });
+  ok(!E.validateLoadings(zeroLoad, dl6).ok, 'an all-zero reply is rejected — the option invoked nothing, so the model did not read it');
+
+  ok(E.loadingsKey('Q', 'A', 'product', 'm') === E.loadingsKey('Q', 'A', 'product', 'm'), 'the cache key is stable');
+  ok(E.loadingsKey('Q', 'A', 'product', 'm') !== E.loadingsKey('Q.', 'A', 'product', 'm'), 'a reworded question keys differently');
+
+  // The engine reads loadings, not the wording. With loadings supplied, the
+  // response function no longer touches the question text.
+  const twoLoad = {Alpha:{price:.7,novelty:.6,trust:.4,skeptic:-.5,effort:-.3,social:.5},
+                   Beta:{price:-.6,novelty:-.4,trust:-.2,skeptic:.6,effort:.4,social:-.5}};
+  const wA = E.simulate(cfg({type:'product', opts:['Alpha','Beta'], question:'Which feature first?', loadings:twoLoad}));
+  const wB = E.simulate(cfg({type:'product', opts:['Alpha','Beta'], question:'Which feature first?.', loadings:twoLoad}));
+  ok(wA.hashFallback === false, 'supplied loadings are used, not the hash');
+  ok(wA.win === wB.win && JSON.stringify(wA.popRate) === JSON.stringify(wB.popRate),
+     'appending "." to the question no longer changes the verdict — the wording is out of the response function');
+  ok(E.simulate(cfg({type:'product', opts:['Alpha','Beta'], question:'Q'})).hashFallback === true,
+     'without loadings the hash fallback is used AND flagged, never silent');
+  // committed prediction still reproduces from the cached loadings
+  ok(JSON.stringify(E.simulate(cfg({type:'product', opts:['Alpha','Beta'], loadings:twoLoad})).popRate)
+     === JSON.stringify(wA.popRate), 'a committed prediction reproduces with cached loadings');
+
+  // Loadings aligned with a population outrank their mirror image — the verdict
+  // now responds to what the option means, not to a hash.
+  const segA = E.activeSegs(market(), [true,true])[0];
+  const aligned = {}, mirror = {};
+  dl6.forEach(d => {
+    const v = segA.t[d.key], factor = (d.invert ? (0.5 - v) : (v - 0.5)) * 2;
+    aligned[d.key] = factor >= 0 ? 0.8 : -0.8;   // point with the population's tilt
+    mirror[d.key] = -aligned[d.key];
+  });
+  const zAl = E.zAffinity(aligned, segA.t, segA, 'X', cfg({type:'product'}), dl6);
+  const zAn = E.zAffinity(mirror,  segA.t, segA, 'X', cfg({type:'product'}), dl6);
+  ok(zAl.A > 0 && zAn.A < 0 && zAl.z > zAn.z, 'loadings aligned with the population outrank their opposite');
+
+  /* ----------------------------------------- per-agent trait vectors (Change 2) */
+  G('Per-agent individuation');
+  // real Gaussian tails: the old residual was hard-bounded at ±1.27, which made
+  // any segment with |z|>1.6 structurally unanimous
+  const gr = E.rng(7); let gmax = 0;
+  for (let i = 0; i < 5000; i++) gmax = Math.max(gmax, Math.abs(E.gauss(gr)));
+  ok(gmax > 3, 'the residual has real tails (was hard-bounded at ±1.27, forcing unanimity)');
+
+  // agent traits average back to the segment mean — individuation without moving
+  // the population. Use a mid-range market so clamping does not bias the mean.
+  const midMkt = {name:'mid', unit:'$', cur:'$', ctx:['c'],
+    names:{f:['A','B','C','D'], l:['E','F','G','H']},
+    segs:[{n:'Lo', s:0.5, age:'30-40', urban:0.5, t:{price:.4,novelty:.4,trust:.4,skeptic:.4,effort:.4,social:.4}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']},
+          {n:'Hi', s:0.5, age:'30-40', urban:0.5, t:{price:.6,novelty:.6,trust:.6,skeptic:.6,effort:.6,social:.6}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']}]};
+  const midCfg = {markets:{m:midMkt}, marketKey:'m', question:'Q', type:'product', opts:['X'], segsOn:[true,true], popN:12000, seed:3, agentsShown:5000};
+  const midAgents = E.buildAgents(midCfg), midDims = E.dims(midMkt);
+  let meanOk = true;
+  [0,1].forEach(si => {
+    const mine = midAgents.filter(a => a.seg === si);
+    midDims.forEach(d => {
+      const avg = mine.reduce((s,a)=>s+a.t[d.key],0)/mine.length;
+      if (Math.abs(avg - midMkt.segs[si].t[d.key]) > 0.02) meanOk = false;
+    });
+  });
+  ok(meanOk, 'per-agent traits average back to the segment mean within tolerance');
+  ok(midAgents.every(a => a.t && midDims.every(d => a.t[d.key] >= 0 && a.t[d.key] <= 1)),
+     'every agent carries a full trait vector in [0,1]');
+
+  // no segment is unanimous even when it leans hard: among agents who are in the
+  // category and not forced buyers, both verdicts appear
+  const leanMkt = {name:'lean', unit:'$', cur:'$', ctx:['c'], sigma:0.12,
+    names:{f:['A','B','C','D'], l:['E','F','G','H']},
+    segs:[{n:'Keen', s:1, age:'30-40', urban:0.5, t:{price:1,novelty:1,trust:1,skeptic:0,effort:0,social:1}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']},
+          {n:'Cool', s:0.001, age:'30-40', urban:0.5, t:{price:.5,novelty:.5,trust:.5,skeptic:.5,effort:.5,social:.5}, wtp:10, sd:3, pos:['{O} ok'], neg:['{O} no']}]};
+  const strongLoad = {O:{price:1,novelty:1,trust:1,skeptic:-1,effort:-1,social:1}};
+  const lean = E.simulate({markets:{m:leanMkt}, marketKey:'m', question:'Q', type:'product', opts:['O'], segsOn:[true,true], popN:12000, seed:2, agentsShown:3000, loadings:strongLoad});
+  const keen = lean.agents.filter(a => a.seg === 0 && !a.out && !a.always);
+  ok(keen.some(a => a.yes[0]) && keen.some(a => !a.yes[0]),
+     'a strongly-leaning segment still contains dissenters (not just the structural floor)');
+
+  /* ----------------------------------------- ephemeral personas (Change 9) */
+  G('Ephemeral personas');
+  const bigNames = {f: Array.from({length:40}, (_,i)=>'F'+i), l: Array.from({length:30}, (_,i)=>'L'+i)};
+  const nameMkt = Object.assign({}, market(), {names: bigNames});
+  const nameCfg = over => Object.assign({markets:{m:nameMkt}, marketKey:'m', question:'Q', type:'product', opts:['X'], segsOn:[true,true], popN:12000, seed:1, agentsShown:260}, over||{});
+  const names1 = E.buildAgents(nameCfg()).map(a => a.name);
+  ok(new Set(names1).size === names1.length, 'names are unique within a run when the pool is large enough (N=260)');
+  const names1b = E.buildAgents(nameCfg({seed:1})).map(a => a.name);
+  const names2 = E.buildAgents(nameCfg({seed:2})).map(a => a.name);
+  ok(names1.join('|') === names1b.join('|'), 'the same seed reproduces the same personas exactly');
+  ok(names1.join('|') !== names2.join('|'), 'a new seed draws different personas');
+
+  /* ----------------------------------------- verbatim bank (Change 3) */
+  G('Trait-matched verbatims');
+  const bankMkt = JSON.parse(JSON.stringify(market()));
+  bankMkt.segs[0].bank = [
+    {driver:'skeptic', valence:'neg', text:'{O}? "Clean" is just a marketing word.'},
+    {driver:'price',   valence:'pos', text:'{O} is a fair price for what it is.'},
+    {driver:'trust',   valence:'pos', text:'I already trust the brand, so {O} is fine.'},
+    {driver:'effort',  valence:'neg', text:'Switching to {O} is more hassle than it is worth.'}
+  ];
+  const bankR = E.simulate(cfg({markets:{m:bankMkt}, opts:['$4','$8','$16']}));
+  const bankAgent = bankR.agents.find(a => a.seg === 0);
+  const bq = E.pickQuote(bankAgent, 0, bankR.opts);
+  ok(bq.indexOf('{O}') === -1 && bq.indexOf('$4') >= 0, 'a bank quote has the option substituted in');
+  const wantValence = bankAgent.yes[0] ? 'pos' : 'neg';
+  const allowedTexts = bankMkt.segs[0].bank.filter(b => b.valence === wantValence).map(b => b.text.replace(/\{O\}/g, '$4'));
+  ok(allowedTexts.length === 0 || allowedTexts.indexOf(bq) >= 0, 'the bank quote matches the agent\'s verdict valence');
+  const noBankAgent = bankR.agents.find(a => a.seg === 1);   // segment 1 has no richer bank
+  ok(E.pickQuote(noBankAgent, 0, bankR.opts) === E.quoteFor(noBankAgent, 0, bankR.opts),
+     'with no bank, pickQuote falls back to the pos/neg pair');
+
+  /* ----------------------------------------- replicate bootstrap (Change 8) */
+  G('Replicate bootstrap');
+  const boot = E.bootstrap(cfg({opts:['$4','$8','$16']}), {replicates: 12, n: 600});
+  ok(boot.replicates === 12 && boot.winShare.length === 3, 'the bootstrap returns a win-share per option');
+  ok(Math.abs(boot.winShare.reduce((a,b)=>a+b,0) - 1) < 1e-9, 'win shares sum to 1');
+  ok(boot.dist.every(d => d.p10 <= d.median && d.median <= d.p90), 'the per-option distribution is ordered p10 ≤ median ≤ p90');
+  ok(typeof boot.tie === 'boolean' && boot.primary && boot.primary.popRate, 'it exposes a win-share tie verdict and a primary run to interview');
+  const bootRepro = E.bootstrap(cfg({opts:['$4','$8','$16']}), {replicates: 12, n: 600});
+  ok(boot.winShare.join() === bootRepro.winShare.join(), 'the bootstrap reproduces from the same base seed');
+
   /* --------------------------------------------------- model output */
   G('Reading model output');
   ok(E.extractJSON('```json\n{"a":1}\n```').a === 1, 'markdown fences stripped');
